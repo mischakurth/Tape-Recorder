@@ -1,0 +1,10 @@
+{
+    "paths": {
+        "data": "data",
+        "models": "data/models",
+        "audio": "data/audio",
+        "audio_assets": "data/audio/assets",
+        "datasets": "data/audio/datasets",
+        "datasets_workdir": "data/audio/datasets-workdir"
+    }
+}

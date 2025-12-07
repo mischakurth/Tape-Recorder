@@ -155,7 +155,6 @@ See [ALIGNMENT-ALGORITHMS.md](ALIGNMENT-ALGORITHMS.md) for detailed algorithm do
 **Output**:
 - Matched before/after pairs saved as individual WAV files
 - Naming: `chunk_{index:06d}.wav`
-- **Total pairs**: 130,834 training examples
 
 ---
 

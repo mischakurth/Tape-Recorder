@@ -86,8 +86,6 @@ We want to digitally reproduce the sound characteristics of an old tape recorder
 | Channels | Stereo |
 | Chunk Size | 50ms |
 | Overlap | 50% (25ms) |
-| Training Pairs | 130,834 examples |
-| Total Duration | ~218 minutes |
 
 ### Equipment
 

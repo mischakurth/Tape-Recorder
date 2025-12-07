@@ -4,7 +4,7 @@
 
 def main() -> None:
     """Run the main program."""
-    print("Hello World")
+    print("Hello Bandsalat")
 
 
 if __name__ == "__main__":

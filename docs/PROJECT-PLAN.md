@@ -402,24 +402,4 @@ sf.write("output_tape.wav", tape_output, sr)
 
 ---
 
-## Training Data Statistics
-
-| Metric | Value |
-|--------|-------|
-| Total training pairs | 130,834 |
-| Chunk duration | 50ms |
-| Overlap | 50% (25ms) |
-| Sample rate | 96 kHz |
-| Channels | Stereo |
-| Bit depth | 32-bit float |
-| Total audio duration | ~218 minutes |
-
----
-
-## References
-
-- [ALIGNMENT-ALGORITHMS.md](ALIGNMENT-ALGORITHMS.md) - Detailed algorithm documentation
-
----
-
 *Last updated: December 2025*

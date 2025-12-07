@@ -32,9 +32,7 @@
 ## Makefile Rules
 
 - All Python execution in the Makefile uses `uv run`, never `python` directly
-- Use `make init` to set up the project
-- Use `make run` to execute the main program
-- Use `make help` to see all available targets
+- Run `make help` to see all available targets
 
 ## Project Structure
 

@@ -183,7 +183,7 @@ sudo apt install ffmpeg
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/yourusername/xmas-hackathon-2025-bandsalat.git
+git clone https://github.com/florianbuetow/xmas-hackathon-2025-bandsalat.git
 cd xmas-hackathon-2025-bandsalat
 
 # 2. Initialize the project
@@ -215,7 +215,8 @@ make jupyter
 ```makefile
 # All Python execution uses uv (never python directly)
 init:
-    mkdir -p src scripts prompts notebooks data/input data/output tests
+    mkdir -p src notebooks tests
+    mkdir -p data/models data/playground data/audio/assets data/audio/datasets data/audio/datasets-workdir
     uv sync --all-extras
 
 run:
@@ -244,7 +245,8 @@ The project uses a centralized configuration file for path management:
         "audio": "data/audio",
         "audio_assets": "data/audio/assets",
         "datasets": "data/audio/datasets",
-        "datasets_workdir": "data/audio/datasets-workdir"
+        "datasets_workdir": "data/audio/datasets-workdir",
+        "playground": "data/playground"
     }
 }
 ```
@@ -275,7 +277,7 @@ cfg.print_paths()
 
 | Notebook | Purpose |
 |----------|---------|
-| `audio-compiler.ipynb` | Compile audio files with markers and delimiters |
+| `demo-audio-compiler.ipynb` | Compile audio files with markers and delimiters |
 | `demo-read-audiofiles.ipynb` | Load and visualize WAV files with librosa |
 | `demo-loudness-normalisation.ipynb` | Normalize audio to target dBFS levels |
 | `demo-audio-chunking.ipynb` | Split audio into 50ms training chunks |

@@ -146,8 +146,8 @@ See [ALIGNMENT-ALGORITHMS.md](ALIGNMENT-ALGORITHMS.md) for detailed algorithm do
 **Parameters**:
 | Parameter | Value |
 |-----------|-------|
-| Chunk duration | 50ms |
-| Overlap | 50% (25ms) |
+| Chunk duration | 50ms (suggested) |
+| Overlap | 50% (suggested) |
 | Sample rate | 96 kHz |
 | Bit depth | 32-bit float |
 | Channels | Stereo |
@@ -315,7 +315,7 @@ sf.write("output_tape.wav", tape_output, sr)
   - [x] `demo-loudness-normalisation.ipynb` - Normalize audio levels
   - [x] `demo-audio-chunking.ipynb` - Split audio into chunks
   - [x] `demo-play-before-after-audio.ipynb` - Compare before/after
-- [x] Audio compiler notebook (`audio-compiler.ipynb`)
+- [x] Audio compiler notebook (`demo-audio-compiler.ipynb`)
 - [x] Alignment algorithms documentation
 
 ### In Progress

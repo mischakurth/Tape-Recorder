@@ -84,8 +84,6 @@ We want to digitally reproduce the sound characteristics of an old tape recorder
 | Sample Rate | 96 kHz |
 | Bit Depth | 32-bit float |
 | Channels | Stereo |
-| Chunk Size | 50ms |
-| Overlap | 50% (25ms) |
 
 ### Equipment
 

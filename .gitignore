@@ -79,7 +79,8 @@ Icon?
 *.local
 
 # Data directories (keep structure, ignore contents)
-data/input/*
-data/output/*
-!data/input/.gitkeep
-!data/output/.gitkeep
+data/**
+!data/
+!data/input/
+!data/output/
+!data/**/.gitkeep

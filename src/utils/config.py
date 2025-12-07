@@ -103,6 +103,10 @@ class Config:
         """Get the datasets working directory (for compilation, processing)."""
         return self._get_path("datasets_workdir")
 
+    def get_playground_dir(self) -> Path:
+        """Get the playground directory (for demo notebooks and experimentation)."""
+        return self._get_path("playground")
+
     def print_paths(self) -> None:
         """Print all configured paths for debugging."""
         print("Bandsalat Configuration:")
@@ -113,3 +117,4 @@ class Config:
         print(f"  Audio assets:      {self.get_audio_assets_dir()}")
         print(f"  Datasets:          {self.get_datasets_dir()}")
         print(f"  Datasets workdir:  {self.get_datasets_workdir()}")
+        print(f"  Playground:        {self.get_playground_dir()}")

@@ -17,6 +17,8 @@
 
 > Transform clean digital audio to sound like it was recorded through a vintage Revox A77 reel-to-reel tape recorder.
 
+![Revox A77 tape recorder setup with HS ORF tape](revox_a77_hs_orf_tape_recorder.jpg)
+
 ---
 
 ## What is Bandsalat?

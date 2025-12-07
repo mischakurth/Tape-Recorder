@@ -15,7 +15,8 @@ help:
 
 init:
 	@echo ""
-	@mkdir -p src scripts prompts notebooks data/input data/output tests
+	@mkdir -p src notebooks tests
+	@mkdir -p data/models data/playground data/audio/assets data/audio/datasets data/audio/datasets-workdir
 	@uv sync --all-extras
 	@echo "Project initialized successfully."
 	@echo ""

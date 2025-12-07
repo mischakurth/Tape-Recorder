@@ -160,6 +160,8 @@ See [ALIGNMENT-ALGORITHMS.md](ALIGNMENT-ALGORITHMS.md) for detailed algorithm do
 
 ## Phase 3: Model Development
 
+> **Research Resources**: See [resources/research/](../resources/research/) for collected research papers and prior work on learning audio transformations from paired examples.
+
 ### 3.1 Feature Extraction
 
 **Mel Spectrogram Transformation**:

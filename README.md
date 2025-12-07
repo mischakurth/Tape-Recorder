@@ -142,7 +142,8 @@ bandsalat/
 │   ├── __init__.py
 │   └── test_config.py
 │
-├── resources/                  # Reference materials (not for production)
+├── resources/                  # Reference materials
+│   └── research/               # Research papers on ML audio approaches
 │
 ├── AGENTS.md                   # Development guidelines
 ├── CLAUDE.md                   # AI assistant instructions
@@ -338,6 +339,7 @@ Used for alignment between before/after recordings:
 | [PROJECT-PLAN.md](docs/PROJECT-PLAN.md) | Detailed project roadmap and ML pipeline |
 | [ALIGNMENT-ALGORITHMS.md](docs/ALIGNMENT-ALGORITHMS.md) | Technical reference for audio alignment |
 | [AGENTS.md](AGENTS.md) | Development rules and guidelines |
+| [resources/research/](resources/research/) | Research papers on ML approaches for audio transformation |
 
 ---
 

@@ -1,5 +1,4 @@
-# data
-bandsalat
+.Rhistory
 
 # Python bytecode and cache
 __pycache__/
@@ -80,6 +79,9 @@ Icon?
 .env
 .envrc
 *.local
+
+# Project organization files
+bandsalat
 
 # Data directories (keep structure, ignore contents)
 data/**

@@ -1,5 +1,7 @@
 from pathlib import Path
 import logging
+from pydub import AudioSegment
+import os
 
 
 class AudioPreprocessor:
@@ -44,27 +46,24 @@ class AudioPreprocessor:
             # FALL 1: Dataset ist komplett fertig
             # (Warped Inputs existieren und Output Chunks existieren)
             if self._has_files(warped_in) and self._has_files(chunk_out):
-                input_files = sorted(list(warped_in.rglob("*.wav")))
-                target_files = sorted(list(chunk_out.rglob("*.wav")))
-                if len(input_files) == len(target_files):
+
+                pairs = self.find_paired_files(warped_in, chunk_out)
+                if pairs:
                     self.logger.info(f"Überspringe {dataset_path.name}: Bereits vollständig verarbeitet.")
                 else:
-                    self.logger.warning(f"Mismatch in Chunks bei {dataset_path.name}. Überspringe.")
+                    self.logger.warning(f"Keine Zuordnung möglich in {dataset_path.name}. Überspringe.")
                 continue
 
             # FALL 2: Chunks existieren, aber Warping fehlt (z.B. Berta, falls Warping fehlt)
             elif self._has_files(chunk_in) and self._has_files(chunk_out):
                 self.logger.info(f"Plane Warping für {dataset_path.name} (Chunks vorhanden).")
 
-                # Wir holen die Paare direkt aus den Chunk-Ordnern
-                input_files = sorted(list(chunk_in.rglob("*.wav")))
-                target_files = sorted(list(chunk_out.rglob("*.wav")))
-
-                if len(input_files) != len(target_files):
-                    self.logger.warning(f"Mismatch in Chunks bei {dataset_path.name}. Überspringe.")
+                pairs = self.find_paired_files(chunk_in, chunk_out)
+                if not pairs:
+                    self.logger.warning(f"Keine Zuordnung möglich in {dataset_path.name}. Überspringe.")
                     continue
 
-                for inp, tgt in zip(input_files, target_files):
+                for inp, tgt in pairs:
                     tasks.append({
                         "mode": "warp_only",
                         "dataset": dataset_path.name,
@@ -78,14 +77,12 @@ class AudioPreprocessor:
             elif self._has_files(raw_in) and self._has_files(raw_out):
                 self.logger.info(f"Plane volle Pipeline für {dataset_path.name} (Rohdaten).")
 
-                input_files = sorted(list(raw_in.rglob("*.wav")))
-                target_files = sorted(list(raw_out.rglob("*.wav")))
-
-                if len(input_files) != len(target_files):
-                    self.logger.warning(f"Mismatch in Rohdaten bei {dataset_path.name}. Überspringe.")
+                pairs = self.find_paired_files(warped_in, chunk_out)
+                if not pairs:
+                    self.logger.warning(f"Keine Zuordnung möglich in {dataset_path.name}. Überspringe.")
                     continue
 
-                for inp, tgt in zip(input_files, target_files):
+                for inp, tgt in pairs:
                     tasks.append({
                         "mode": "full_pipeline",
                         "dataset": dataset_path.name,
@@ -103,16 +100,77 @@ class AudioPreprocessor:
         self.logger.info(f"Aufgaben geplant: {len(tasks)}")
         return tasks
 
-    def _clean_audio(self, audio_data):
-        pass
+    def calculate_chunk_boundaries(self, duration_ms: int, chunk_duration_ms: int, chunk_spacing_ms: int) -> list[
+        tuple[int, int]]:
+        """
+        Berechnet Start- und Endzeiten für Chunks mit Überlappung.
+        Quelle: demo-audio-chunking.ipynb
+        """
+        chunks = []
+        for start in range(0, duration_ms, chunk_spacing_ms):
+            end = start + chunk_duration_ms
+            if end > duration_ms:
+                # Optionale Logik für den letzten Chunk (verwerfen oder kürzen)
+                break
+            chunks.append((start, end))
+        return chunks
 
-    def _align_and_warp(self, input_audio, target_audio):
+
+    def slice_and_save_chunks(self, audio: AudioSegment, output_dir: Path, file_stem: str, chunk_duration_ms: int,
+                              chunk_spacing_ms: int):
+        """
+        Zerteilt das Audio und speichert die Segmente.
+        Quelle: demo-audio-chunking.ipynb
+        """
+        boundaries = self.calculate_chunk_boundaries(len(audio), chunk_duration_ms, chunk_spacing_ms)
+
+        for start, end in boundaries:
+            chunk = audio[start:end]
+            chunk_filename = f"{file_stem}_{start:08d}.wav"
+            out_path = output_dir / chunk_filename
+            chunk.export(str(out_path), format="wav")
+
+    # TODO muss Paare anhand der Nummern finden, nicht anhand Namensersetzungen o. Ä.
+    def find_paired_files(self, input_dir: Path, output_dir: Path) -> list[tuple[Path, Path]]:
+        """
+        Findet Paare von Eingabe- und Ausgabe-Dateien basierend auf der Namenskonvention.
+        Quelle: demo-play-before-after-audio.ipynb
+        """
+        pairs = []
+        # Rekursive Suche nach wav Dateien
+        for input_file in sorted(input_dir.rglob('*.wav')):
+            if 'vorher' in input_file.name:
+                out_name = input_file.name.replace('vorher', 'taped')
+            elif 'orig' in input_file.name:
+                out_name = input_file.name.replace('orig', 'tape')
+            else:
+                out_name = input_file.name
+
+            # Pfad-Rekonstruktion (unter der Annahme gleicher Unterordner-Struktur)
+            relative_path = input_file.parent.relative_to(input_dir)
+            possible_output = output_dir / relative_path / out_name
+
+            if possible_output.exists():
+                pairs.append((input_file, possible_output))
+
+        return pairs
+
+
+    def _align_and_warp(self, input_path: Path, target_path: Path, dest_dir: Path):
         # Wird in beiden Modi benötigt
+        print(f'aligning {input_path} with {target_path}')
         pass
 
-    def _create_chunks(self, audio_data):
-        # Wird nur in full_pipeline benötigt
-        pass
+
+    def normalize_audio(self, audio_segment: AudioSegment, target_dbfs: float = -0.1) -> AudioSegment:
+        """
+        Normalisiert ein AudioSegment auf einen Ziel-dBFS-Wert.
+        Quelle: demo-loudness-normalisation.ipynb
+        """
+        change_in_dbfs = target_dbfs - audio_segment.max_dBFS
+        return audio_segment.apply_gain(change_in_dbfs)
+
+
 
     def process_pair(self, task: dict):
         """
@@ -122,21 +180,23 @@ class AudioPreprocessor:
 
         try:
             if mode == "full_pipeline":
-                # input_path ist ein langes Raw-File
-                # 1. Laden & Cleanen
-                # 2. Chunken -> Speichern in dest_chunk_in / dest_chunk_out
-                # 3. Warpen der Input-Chunks gegen Output-Chunks
-                # 4. Speichern in dest_warped
-                # self.logger.info(f"Full Pipeline: {task['id']}")
-                pass
+                # 1. Laden & Normalisieren
+                inp_audio = AudioSegment.from_file(task['input_path'])
+                inp_audio = self.normalize_audio(inp_audio)
+
+                tgt_audio = AudioSegment.from_file(task['target_path'])
+                tgt_audio = self.normalize_audio(tgt_audio)
+
+                # 2. Chunken & Speichern (Pathlib kompatibel machen)
+                chunk_ms = int(self.chunk_length * 1000)
+
+                self.slice_and_save_chunks(inp_audio, task['dest_chunk_in'], task['id'], chunk_ms, chunk_ms)
+                self.slice_and_save_chunks(tgt_audio, task['dest_chunk_out'], task['id'], chunk_ms, chunk_ms)
+
+                self._align_and_warp(task['input_path'], task['target_path'], task['dest_warped'])
 
             elif mode == "warp_only":
-                # input_path ist hier bereits ein Chunk
-                # 1. Laden
-                # 2. _align_and_warp(input_chunk, target_chunk)
-                # 3. Speichern in task['dest_path']
-                # self.logger.info(f"Warping Chunk: {task['id']}")
-                pass
+                self._align_and_warp(task['input_path'], task['target_path'], task['dest_path'])
 
         except Exception as e:
             self.logger.error(f"Fehler bei {task['id']} ({mode}): {e}")
@@ -167,8 +227,3 @@ if __name__ == "__main__":
     target_dataset = "dataset-test" # oder None, bzw weglassen wenn alle Daten bearbeitet werden sollen.
     processor = AudioPreprocessor(data_root="../data", target_dataset=target_dataset)
     processor.run()
-
-
-    # TODO
-    # Next steps: Gemini notebooks geben, in AudioProcessor diese Methoden erstellen lassen.
-    # AudioProcessor umbenennen

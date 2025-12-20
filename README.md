@@ -111,10 +111,10 @@ bandsalat/
 │       └── config.py           # Configuration management
 │
 ├── notebooks/                  # Jupyter notebooks
-│   ├── demo-audio-compiler.ipynb         # Compile audio with markers
-│   ├── demo-read-audiofiles.ipynb        # Load and visualize audio
-│   ├── demo-loudness-normalisation.ipynb # Normalize audio levels
-│   ├── demo-audio-chunking.ipynb         # Split audio into chunks
+│   ├── demo-audio-compiler.ipynb          # Compile audio with markers
+│   ├── demo-read-audiofiles.ipynb         # Load and visualize audio
+│   ├── demo-loudness-normalisation.ipynb  # Normalize audio levels
+│   ├── demo-audio-chunking.ipynb          # Split audio into chunks
 │   └── demo-play-before-after-audio.ipynb # Compare before/after
 │
 ├── docs/                       # Documentation
@@ -126,9 +126,9 @@ bandsalat/
 │   ├── playground/             # Scratch space for experiments
 │   └── audio/
 │       ├── assets/             # Audio utilities
-│       │   ├── audio_delimiters/      # Beeps, silence markers
-│       │   ├── free-spoken-digit-dataset/  # Spoken digits (0-9)
-│       │   └── samples/               # Source drum samples
+│       │   ├── audio_delimiters/          # Beeps, silence markers
+│       │   ├── free-spoken-digit-dataset/ # Spoken digits (0-9)
+│       │   └── samples/                   # Source drum samples
 │       └── datasets/           # Training datasets
 │           ├── dataset-alfred/        # Placeholder
 │           ├── dataset-berta/         # Main dataset (~4,586 pairs)

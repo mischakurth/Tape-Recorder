@@ -44,7 +44,12 @@ class AudioPreprocessor:
             # FALL 1: Dataset ist komplett fertig
             # (Warped Inputs existieren und Output Chunks existieren)
             if self._has_files(warped_in) and self._has_files(chunk_out):
-                self.logger.info(f"Überspringe {dataset_path.name}: Bereits vollständig verarbeitet.")
+                input_files = sorted(list(warped_in.rglob("*.wav")))
+                target_files = sorted(list(chunk_out.rglob("*.wav")))
+                if len(input_files) == len(target_files):
+                    self.logger.info(f"Überspringe {dataset_path.name}: Bereits vollständig verarbeitet.")
+                else:
+                    self.logger.warning(f"Mismatch in Chunks bei {dataset_path.name}. Überspringe.")
                 continue
 
             # FALL 2: Chunks existieren, aber Warping fehlt (z.B. Berta, falls Warping fehlt)
@@ -159,6 +164,11 @@ class AudioPreprocessor:
 
 
 if __name__ == "__main__":
-    target_dataset = "dataset-small_test_data" # oder None, bzw weglassen wenn alle Daten bearbeitet werden sollen.
+    target_dataset = "dataset-test" # oder None, bzw weglassen wenn alle Daten bearbeitet werden sollen.
     processor = AudioPreprocessor(data_root="../data", target_dataset=target_dataset)
     processor.run()
+
+
+    # TODO
+    # Next steps: Gemini notebooks geben, in AudioProcessor diese Methoden erstellen lassen.
+    # AudioProcessor umbenennen

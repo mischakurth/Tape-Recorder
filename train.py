@@ -1,13 +1,15 @@
+import random
+import gc
 from pathlib import Path
 import torch
 from torch.utils.data import DataLoader
-from src.dataset import AudioDataset
 from src.model import AudioUNet
+from src.dataset import SlidingWindowDataset
 from src.audio_processor import AudioProcessor
 import os
-import numpy as np
 
-# --- Hilfsfunktion zum Finden der Dateien (aus AudioProcessorUnusedOldSystem.py) ---
+
+# --- Hilfsfunktion zum Finden der Dateien ---
 def find_paired_files(input_dir: Path, output_dir: Path) -> list[tuple[Path, Path]]:
     """
     Findet Paare von Eingabe- und Ausgabe-Dateien basierend auf der Namenskonvention.
@@ -22,7 +24,6 @@ def find_paired_files(input_dir: Path, output_dir: Path) -> list[tuple[Path, Pat
         else:
             out_name = input_file.name
 
-        # Vereinfachte Suche: Wir suchen einfach im output_dir nach der Datei
         possible_output = output_dir / out_name
 
         if possible_output.exists():
@@ -30,60 +31,8 @@ def find_paired_files(input_dir: Path, output_dir: Path) -> list[tuple[Path, Pat
 
     return pairs
 
-class PairedAudioDataset(torch.utils.data.Dataset):
-    def __init__(self, file_pairs, processor, crop_width=256):
-        self.file_pairs = file_pairs
-        self.processor = processor
-        self.crop_width = crop_width
-        self.target_height = 1040
-
-    def __len__(self):
-        return len(self.file_pairs)
-
-    def __getitem__(self, idx):
-        input_path, target_path = self.file_pairs[idx]
-
-        # Input laden & verarbeiten
-        y_in = self.processor.load_audio(str(input_path))
-        stft_in = self.processor.audio_to_stft(y_in)
-        cnn_in = self.processor.stft_to_cnn_input(stft_in)
-        
-        # Target laden & verarbeiten
-        y_tgt = self.processor.load_audio(str(target_path))
-        stft_tgt = self.processor.audio_to_stft(y_tgt)
-        cnn_tgt = self.processor.stft_to_cnn_input(stft_tgt)
-
-        # Padding (Freq)
-        c, h, w = cnn_in.shape
-        pad_height = self.target_height - h
-        if pad_height > 0:
-            cnn_in = np.pad(cnn_in, ((0, 0), (0, pad_height), (0, 0)), mode='constant')
-            cnn_tgt = np.pad(cnn_tgt, ((0, 0), (0, pad_height), (0, 0)), mode='constant')
-
-        # Slicing (Zeit) - Random Crop
-        # Wir müssen sicherstellen, dass wir an der gleichen Stelle schneiden!
-        _, _, time_frames = cnn_in.shape
-        
-        # Achtung: Input und Target können leicht unterschiedlich lang sein.
-        # Wir nehmen das Minimum.
-        min_frames = min(cnn_in.shape[2], cnn_tgt.shape[2])
-        
-        if min_frames > self.crop_width:
-            start = torch.randint(0, min_frames - self.crop_width, (1,)).item()
-            crop_in = cnn_in[:, :, start: start + self.crop_width]
-            crop_tgt = cnn_tgt[:, :, start: start + self.crop_width]
-        else:
-            # Padding in Zeitrichtung
-            pad_time = self.crop_width - min_frames
-            crop_in = np.pad(cnn_in[:, :, :min_frames], ((0, 0), (0, 0), (0, pad_time)), mode='constant')
-            crop_tgt = np.pad(cnn_tgt[:, :, :min_frames], ((0, 0), (0, 0), (0, pad_time)), mode='constant')
-
-        return torch.from_numpy(crop_in).float(), torch.from_numpy(crop_tgt).float()
 
 def get_all_file_pairs(data_root: Path, target_dataset: str | None = None) -> list[tuple[Path, Path]]:
-    """
-    Sammelt alle Dateipaare aus den angegebenen Datasets.
-    """
     all_pairs = []
 
     if target_dataset:
@@ -95,95 +44,172 @@ def get_all_file_pairs(data_root: Path, target_dataset: str | None = None) -> li
         if not dataset_path.exists():
             print(f"Warnung: Dataset {dataset_path} nicht gefunden.")
             continue
-            
+
         input_dir = dataset_path / "tape-input"
         output_dir = dataset_path / "tape-output-recordings"
-        
+
         if input_dir.exists() and output_dir.exists():
             pairs = find_paired_files(input_dir, output_dir)
             all_pairs.extend(pairs)
             print(f"Dataset {dataset_path.name}: {len(pairs)} Paare gefunden.")
         else:
             print(f"Warnung: Ordnerstruktur unvollständig in {dataset_path.name}")
-            
+
     return all_pairs
+
 
 def main():
     # 1. Config
-    # Option: "dataset-test" für schnellen Test, None für alle Datasets
-    target_dataset = "dataset-test" 
-    # target_dataset = None 
+    target_dataset = "dataset-test"
+    # target_dataset = None  # Nimm None für ALLES (empfohlen für das finale Training)
 
     data_root = Path("data/audio/datasets")
-    
-    all_pairs = get_all_file_pairs(data_root, target_dataset)
 
-    print(f"Gesamt: {len(all_pairs)} Trainings-Paare gefunden.")
-    
+    # Pfad zum Modell
+    project_root = Path(__file__).parent.resolve()
+    models_dir = project_root / "models"
+    os.makedirs(models_dir, exist_ok=True)
+    model_path = models_dir / "unet_v1_best.pth"  # Nennen wir es 'best', das ist üblicher
+
+    # --- Training Config ---
+    batch_size = 16  # Perfekt für M3 Pro
+    lr = 1e-4
+    epochs = 10  # Da SlidingWindow riesig ist, reichen oft weniger Epochen!
+    load_pretrained = False  # Setze auf True, um Training fortzusetzen!
+
+    # Daten laden
+    all_pairs = get_all_file_pairs(data_root, target_dataset)
+    print(f"Gesamt: {len(all_pairs)} Datei-Paare gefunden.")
+
     if not all_pairs:
         print("Keine Trainingsdaten gefunden.")
         return
 
-    batch_size = 4
-    lr = 1e-4
-    epochs = 10
+    # Split
+    random.seed(42)
+    random.shuffle(all_pairs)
+    split_idx = int(len(all_pairs) * 0.80)  # 80% Training ist Standard
+    train_pairs = all_pairs[:split_idx]
+    val_pairs = all_pairs[split_idx:]
+
+    print(f"Daten Split: {len(train_pairs)} Files Training, {len(val_pairs)} Files Validierung")
 
     # Check Device
     device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
     print(f"Training auf: {device}")
 
     # 2. Objekte erstellen
-    # Wichtig: complex128/float64 für maximale Präzision aktivieren wenn gewünscht
     proc = AudioProcessor(sample_rate=96000)
 
-    dataset = PairedAudioDataset(all_pairs, proc, crop_width=256)
-    loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+    # --- Training Dataset ---
+    print("Initialisiere Training Dataset...")
+    train_dataset = SlidingWindowDataset(train_pairs, proc, crop_width=256, overlap=0.5)
 
-    # Modell: 4 Channels Input (Real/Imag für Stereo oder ähnliches, je nach Processor)
-    # AudioProcessor liefert 4 Channels (2 für Magnitude, 2 für Phase oder Real/Imag bei Stereo?)
-    # Laut AudioDataset Code: cnn_input = self.processor.stft_to_cnn_input(stft)
-    # Ich nehme an 4 ist korrekt.
+    # Automatische Worker-Entscheidung
+    if train_dataset.use_preload:
+        print("Dataset im RAM: Setze num_workers=0 (schnellster Modus)")
+        train_workers = 0
+    else:
+        print("Dataset auf Disk: Setze num_workers=4 (Hintergrund-Laden)")
+        train_workers = 4
+
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=train_workers,
+        pin_memory=False
+    )
+
+    # --- Validation Dataset ---
+    print("Initialisiere Validation Dataset...")
+    val_dataset = SlidingWindowDataset(val_pairs, proc, crop_width=256, overlap=0.0)
+
+    # Auch hier automatisch prüfen
+    val_workers = 0 if val_dataset.use_preload else 2
+
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=val_workers,
+        pin_memory=False
+    )
+
+    print(f"Total Training Chunks: {len(train_dataset)}")
+    print(f"Total Validation Chunks: {len(val_dataset)}")
+
+    # Modell setup
     model = AudioUNet(n_channels=4, n_classes=4).to(device)
+
+    # --- RESUME LOGIC ---
+    if load_pretrained and model_path.exists():
+        print(f"Lade existierendes Modell von {model_path}...")
+        state_dict = torch.load(model_path, map_location=device)
+        model.load_state_dict(state_dict)
+    else:
+        print("Starte neues Training.")
+
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-    loss_fn = torch.nn.MSELoss()
+
+    # --- WICHTIGE ÄNDERUNG: L1 Loss ---
+    loss_fn = torch.nn.L1Loss()  # Besser für Audio als MSE
 
     # 3. Training Loop
+    best_val_loss = float('inf')
+
     for epoch in range(epochs):
+        # --- TRAINING ---
         model.train()
-        total_loss = 0
+        train_loss = 0.0
 
-        for batch_idx, (x, y) in enumerate(loader):
-            # x = clean, y = tape
-            x = x.to(device) 
-            y = y.to(device) 
+        print(f"Starte Epoch {epoch + 1}/{epochs}...")
+        for batch_idx, (x, y) in enumerate(train_loader):
+            x, y = x.to(device), y.to(device)
 
-            # Forward: Das Modell soll aus dem sauberen Signal (x) den Tape-Klang (y) erzeugen.
-            # Input: Clean (x)
-            # Target: Tape (y)
             pred = model(x)
             loss = loss_fn(pred, y)
 
-            # Backward
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
 
-            total_loss += loss.item()
+            train_loss += loss.item()
 
-            if batch_idx % 10 == 0:
-                print(f"Epoch {epoch} | Batch {batch_idx} | Loss: {loss.item():.6f}")
+            # Kleines Feedback alle 100 Batches
+            if batch_idx % 100 == 0:
+                print(f"   Batch {batch_idx}/{len(train_loader)} Loss: {loss.item():.6f}")
 
-        print(f"==> Epoch {epoch} beendet. Avg Loss: {total_loss / len(loader):.6f}")
+        avg_train_loss = train_loss / len(train_loader)
 
-    # 4. Modell speichern
-    project_root = Path(__file__).parent.resolve()
-    models_dir = project_root / "models"
-    
-    os.makedirs(models_dir, exist_ok=True)
-    model_path = models_dir / "unet_v1.pth"
-    
-    torch.save(model.state_dict(), model_path)
-    print(f"Modell gespeichert unter: {model_path}")
+        # --- VALIDIERUNG ---
+        model.eval()
+        val_loss = 0.0
+
+        with torch.no_grad():
+            for x, y in val_loader:
+                x, y = x.to(device), y.to(device)
+                pred = model(x)
+                loss = loss_fn(pred, y)
+                val_loss += loss.item()
+
+        avg_val_loss = val_loss / len(val_loader)
+        print(f"==> Epoch {epoch + 1} | Train Loss: {avg_train_loss:.6f} | Val Loss: {avg_val_loss:.6f}")
+
+        # --- WICHTIG: MPS SPEICHER BEREINIGUNG ---
+        # Das verhindert, dass der RAM/VRAM volläuft und das Training langsam wird.
+        if device.type == 'mps':
+            torch.mps.empty_cache()
+        gc.collect()  # Python Garbage Collector forcieren
+
+        # --- Speichern (Nur wenn es das beste bisher ist) ---
+        if avg_val_loss < best_val_loss:
+            best_val_loss = avg_val_loss
+            torch.save(model.state_dict(), model_path)
+            print(f"   Neuer Bestwert! Modell gespeichert unter: {model_path}")
+
+        # Optional: Immer den letzten Stand auch speichern, falls Absturz
+        torch.save(model.state_dict(), models_dir / "unet_last.pth")
 
 
 if __name__ == "__main__":

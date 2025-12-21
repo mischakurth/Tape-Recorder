@@ -5,6 +5,58 @@ import soundfile as sf
 import matplotlib.pyplot as plt
 from typing import Tuple
 import os
+import torch
+
+
+class PairedAudioDataset(torch.utils.data.Dataset):
+    def __init__(self, file_pairs, processor, crop_width=256):
+        self.file_pairs = file_pairs
+        self.processor = processor
+        self.crop_width = crop_width
+        self.target_height = 1040
+
+    def __len__(self):
+        return len(self.file_pairs)
+
+    def __getitem__(self, idx):
+        input_path, target_path = self.file_pairs[idx]
+
+        # Input laden & verarbeiten
+        y_in = self.processor.load_audio(str(input_path))
+        stft_in = self.processor.audio_to_stft(y_in)
+        cnn_in = self.processor.stft_to_cnn_input(stft_in)
+
+        # Target laden & verarbeiten
+        y_tgt = self.processor.load_audio(str(target_path))
+        stft_tgt = self.processor.audio_to_stft(y_tgt)
+        cnn_tgt = self.processor.stft_to_cnn_input(stft_tgt)
+
+        # Padding (Freq)
+        c, h, w = cnn_in.shape
+        pad_height = self.target_height - h
+        if pad_height > 0:
+            cnn_in = np.pad(cnn_in, ((0, 0), (0, pad_height), (0, 0)), mode='constant')
+            cnn_tgt = np.pad(cnn_tgt, ((0, 0), (0, pad_height), (0, 0)), mode='constant')
+
+        # Slicing (Zeit) - Random Crop
+        # Wir müssen sicherstellen, dass wir an der gleichen Stelle schneiden!
+        _, _, time_frames = cnn_in.shape
+
+        # Achtung: Input und Target können leicht unterschiedlich lang sein.
+        # Wir nehmen das Minimum.
+        min_frames = min(cnn_in.shape[2], cnn_tgt.shape[2])
+
+        if min_frames > self.crop_width:
+            start = torch.randint(0, min_frames - self.crop_width, (1,)).item()
+            crop_in = cnn_in[:, :, start: start + self.crop_width]
+            crop_tgt = cnn_tgt[:, :, start: start + self.crop_width]
+        else:
+            # Padding in Zeitrichtung
+            pad_time = self.crop_width - min_frames
+            crop_in = np.pad(cnn_in[:, :, :min_frames], ((0, 0), (0, 0), (0, pad_time)), mode='constant')
+            crop_tgt = np.pad(cnn_tgt[:, :, :min_frames], ((0, 0), (0, 0), (0, pad_time)), mode='constant')
+
+        return torch.from_numpy(crop_in).float(), torch.from_numpy(crop_tgt).float()
 
 
 class AudioProcessor:
@@ -14,23 +66,26 @@ class AudioProcessor:
         self.hop_length = hop_length
 
     def load_audio(self, file_path: str) -> np.ndarray:
-        # mono=False lädt Stereo als (2, samples)
-        # Wenn die Datei Mono ist, kommt trotzdem (samples,) zurück, daher der Reshape-Check
+        """Lädt Audio als Stereo (2, samples). Konvertiert Mono zu Stereo."""
+        # mono=False ist wichtig für Stereo
         y, _ = librosa.load(file_path, sr=self.sample_rate, mono=False)
 
-        # Sicherstellen, dass wir immer (Channels, Samples) haben
+        # Falls Mono geladen wurde (1D Array), zu (1, samples) erweitern
         if y.ndim == 1:
-            y = y[np.newaxis, :]  # Erweitere zu (1, samples)
+            y = y[np.newaxis, :]
+
+        # Falls wirklich Mono (1 Channel), duplizieren zu Pseudo-Stereo für Konsistenz
+        if y.shape[0] == 1:
+            y = np.concatenate([y, y], axis=0)
+
         return y
 
     def save_audio(self, file_path: str, waveform: np.ndarray) -> None:
-        # Soundfile erwartet (Samples, Channels), Librosa liefert (Channels, Samples)
-        # Wir müssen transponieren (.T)
+        """Speichert Audio. Erwartet (Channels, Samples), Soundfile braucht (Samples, Channels)."""
         sf.write(file_path, waveform.T, self.sample_rate)
 
     def audio_to_stft(self, waveform: np.ndarray) -> np.ndarray:
-        # Wir iterieren über die Kanäle (z.B. Links und Rechts)
-        # Input Shape: (Channels, Samples) -> Output Shape: (Channels, Freqs, Frames)
+        """Erzeugt komplexes STFT. Output: (Channels, Freq, Time)."""
         stft_channels = []
         for channel_idx in range(waveform.shape[0]):
             stft = librosa.stft(waveform[channel_idx], n_fft=self.n_fft, hop_length=self.hop_length)
@@ -38,76 +93,56 @@ class AudioProcessor:
         return np.array(stft_channels)
 
     def stft_to_audio(self, stft_matrix: np.ndarray, original_length: int = None) -> np.ndarray:
-        # Input Shape: (Channels, Freqs, Frames)
+        """Rekonstruiert Audio via iSTFT."""
         audio_channels = []
         for channel_idx in range(stft_matrix.shape[0]):
             y = librosa.istft(stft_matrix[channel_idx], hop_length=self.hop_length, length=original_length)
             audio_channels.append(y)
         return np.array(audio_channels)
 
-    # --- Feature Engineering ---
-    def separate_magnitude_phase(self, stft_matrix: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-        return np.abs(stft_matrix), np.angle(stft_matrix)
-
-    def combine_magnitude_phase(self, magnitude: np.ndarray, phase: np.ndarray) -> np.ndarray:
-        return magnitude * np.exp(1j * phase)
-
-    def normalize(self, magnitude: np.ndarray) -> np.ndarray:
-        """
-        Normalisiert Amplitude zu DB.
-        Änderungen für Lossless-Verhalten:
-        - amin=1e-10: Erlaubt extrem leise Signale ohne Clipping (Standard war 1e-5).
-        - top_db=None: Deaktiviert das Abschneiden leiser Frequenzen (Standard war 80dB).
-        """
-        return librosa.amplitude_to_db(magnitude, ref=1.0, amin=1e-10, top_db=None)
-
-    def denormalize(self, magnitude_db: np.ndarray) -> np.ndarray:
-        """
-        Kehrt die Log-Skalierung um.
-        ref=1.0 muss mit normalize übereinstimmen.
-        """
-        return librosa.db_to_amplitude(magnitude_db, ref=1.0)
-
-    # --- CNN Interfaces ---
     def stft_to_cnn_input(self, stft_matrix: np.ndarray) -> np.ndarray:
         """
-        Wandelt Stereo-STFT in 4-Kanal-Tensor.
-        Input: (2, Freq, Time) complex
-        Output: (4, Freq, Time) float -> [L_Mag, L_Phase, R_Mag, R_Phase]
+        Wandelt Stereo-STFT in 4-Kanal-Tensor (Real/Imag).
+        Strategie: Real/Imag ist linear und MSE-freundlich (besser als Mag/Phase).
+        Output: (4, Freq, Time) -> [L_Real, L_Imag, R_Real, R_Imag]
         """
-        channels, freq, time = stft_matrix.shape
         cnn_layers = []
+        for c in range(stft_matrix.shape[0]):
+            # Real und Imaginärteil splitten
+            # Skalierung * 0.1 bringt Werte grob in Bereich -1..1 für das Netz
+            re = np.real(stft_matrix[c]) * 0.1
+            im = np.imag(stft_matrix[c]) * 0.1
+            cnn_layers.extend([re, im])
 
-        for c in range(channels):
-            mag, phase = self.separate_magnitude_phase(stft_matrix[c])
-            mag_db = self.normalize(mag)  # Deine korrigierte normalize Methode (ref=1.0)
-            cnn_layers.append(mag_db)
-            cnn_layers.append(phase)
-
-        # Stacken entlang der ersten Achse
         return np.stack(cnn_layers, axis=0)
 
     def cnn_input_to_stft(self, cnn_tensor: np.ndarray) -> np.ndarray:
         """
-        Input: (4, Freq, Time) -> [L_Mag, L_Phase, R_Mag, R_Phase]
-        Output: (2, Freq, Time) complex
+        Kehrt die Real/Imag Transformation um.
+        Input: (4, Freq, Time) oder (Batch, 4, Freq, Time)
+        Output: (2, Freq, Time) komplex
         """
-        total_layers = cnn_tensor.shape[0]
-        # Wir nehmen an: 2 Layer pro Audio-Kanal (Mag + Phase)
-        num_audio_channels = total_layers // 2
+        # Falls Batch-Dimension existiert, muss das hier handled werden (meistens aber nicht nötig im Processor)
+        if cnn_tensor.ndim == 4:
+            # Falls du Tensor direkt übergibst: (Batch, 4, H, W) -> nicht Standard für diese Klasse,
+            # aber falls es passiert, nimm das erste Element oder iteriere.
+            # Hier gehen wir von 3D (Channels, H, W) aus (einzelnes Sample).
+            pass
 
         stft_channels = []
+        # Wir erwarten 4 Kanäle -> 2 Audio Kanäle
+        num_audio_channels = cnn_tensor.shape[0] // 2
 
         for c in range(num_audio_channels):
-            # Layer Indizes berechnen: 0,1 für Links -> 2,3 für Rechts
-            mag_idx = c * 2
-            phase_idx = c * 2 + 1
+            # Indizes: 0,1 für Links -> 2,3 für Rechts
+            re_idx = c * 2
+            im_idx = c * 2 + 1
 
-            mag_db = cnn_tensor[mag_idx]
-            phase = cnn_tensor[phase_idx]
+            re = cnn_tensor[re_idx]
+            im = cnn_tensor[im_idx]
 
-            mag = self.denormalize(mag_db)  # Deine korrigierte denormalize Methode
-            stft = self.combine_magnitude_phase(mag, phase)
+            # Skalierung rückgängig (* 10.0) und komplex zusammensetzen
+            stft = (re + 1j * im) * 10.0
             stft_channels.append(stft)
 
         return np.array(stft_channels)

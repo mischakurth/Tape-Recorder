@@ -22,61 +22,64 @@ class DoubleConv(nn.Module):
 
 
 class AudioUNet(nn.Module):
-    def __init__(self, n_channels=4, n_classes=4):
+    def __init__(self, n_channels=4, n_classes=4, base_channels=32):
         super(AudioUNet, self).__init__()
         self.n_channels = n_channels
         self.n_classes = n_classes
 
+        # Durch 'base_channels' können wir das Modell skalieren
+        bc = base_channels
+
         # Encoder (Downsampling)
-        self.inc = DoubleConv(n_channels, 64)
-        self.down1 = nn.Sequential(nn.MaxPool2d(2), DoubleConv(64, 128))
-        self.down2 = nn.Sequential(nn.MaxPool2d(2), DoubleConv(128, 256))
-        self.down3 = nn.Sequential(nn.MaxPool2d(2), DoubleConv(256, 512))
-        self.down4 = nn.Sequential(nn.MaxPool2d(2), DoubleConv(512, 1024))  # Bottleneck
+        # 32 -> 64 -> 128 -> 256 -> 512 (statt bis 1024)
+        self.inc = DoubleConv(n_channels, bc)
+        self.down1 = nn.Sequential(nn.MaxPool2d(2), DoubleConv(bc, bc * 2))
+        self.down2 = nn.Sequential(nn.MaxPool2d(2), DoubleConv(bc * 2, bc * 4))
+        self.down3 = nn.Sequential(nn.MaxPool2d(2), DoubleConv(bc * 4, bc * 8))
+        self.down4 = nn.Sequential(nn.MaxPool2d(2), DoubleConv(bc * 8, bc * 16))  # Bottleneck (jetzt 512)
 
         # Decoder (Upsampling)
-        self.up1 = nn.ConvTranspose2d(1024, 512, kernel_size=2, stride=2)
-        self.conv1 = DoubleConv(1024, 512)  # 1024 in, da 512 von up + 512 von skip
+        self.up1 = nn.ConvTranspose2d(bc * 16, bc * 8, kernel_size=2, stride=2)
+        self.conv1 = DoubleConv(bc * 16, bc * 8)
 
-        self.up2 = nn.ConvTranspose2d(512, 256, kernel_size=2, stride=2)
-        self.conv2 = DoubleConv(512, 256)
+        self.up2 = nn.ConvTranspose2d(bc * 8, bc * 4, kernel_size=2, stride=2)
+        self.conv2 = DoubleConv(bc * 8, bc * 4)
 
-        self.up3 = nn.ConvTranspose2d(256, 128, kernel_size=2, stride=2)
-        self.conv3 = DoubleConv(256, 128)
+        self.up3 = nn.ConvTranspose2d(bc * 4, bc * 2, kernel_size=2, stride=2)
+        self.conv3 = DoubleConv(bc * 4, bc * 2)
 
-        self.up4 = nn.ConvTranspose2d(128, 64, kernel_size=2, stride=2)
-        self.conv4 = DoubleConv(128, 64)
+        self.up4 = nn.ConvTranspose2d(bc * 2, bc, kernel_size=2, stride=2)
+        self.conv4 = DoubleConv(bc * 2, bc)
 
         # Output Layer
-        self.outc = nn.Conv2d(64, n_classes, kernel_size=1)
+        self.outc = nn.Conv2d(bc, n_classes, kernel_size=1)
 
     def forward(self, x):
-        # Encoder
         x1 = self.inc(x)
         x2 = self.down1(x1)
         x3 = self.down2(x2)
         x4 = self.down3(x3)
         x5 = self.down4(x4)
 
-        # Decoder mit Skip Connections
         x = self.up1(x5)
-        # Resize falls Dimensionen durch Pooling ungerade waren (Safety)
+        # Padding Logik für ungerade Dimensionen
         diffY = x4.size()[2] - x.size()[2]
         diffX = x4.size()[3] - x.size()[3]
         x = F.pad(x, [diffX // 2, diffX - diffX // 2, diffY // 2, diffY - diffY // 2])
+
         x = torch.cat([x4, x], dim=1)
         x = self.conv1(x)
 
         x = self.up2(x)
-        x = torch.cat([x3, x], dim=1)  # Skip
+        x = torch.cat([x3, x], dim=1)
         x = self.conv2(x)
 
         x = self.up3(x)
-        x = torch.cat([x2, x], dim=1)  # Skip
+        x = torch.cat([x2, x], dim=1)
         x = self.conv3(x)
 
         x = self.up4(x)
-        x = torch.cat([x1, x], dim=1)  # Skip
+        x = torch.cat([x1, x], dim=1)
         x = self.conv4(x)
 
         return self.outc(x)

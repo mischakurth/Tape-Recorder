@@ -17,7 +17,7 @@ from src.model import AudioUNet
 from src.audio_processor import AudioProcessor
 
 # --- KONFIGURATION ---
-MODEL_PATH = "models/charlie_best.pth"
+MODEL_PATH = "models/best_model.pth"
 CHUNK_WIDTH = 256
 TARGET_HEIGHT = 1040
 WARN_DURATION = 60.0

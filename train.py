@@ -96,7 +96,7 @@ def get_all_file_pairs(data_root: Path, target_dataset: str | None = None) -> li
 
 def main():
     # 1. Config
-    target_dataset = "dataset-test"
+    target_dataset = "dataset-berta"
     # target_dataset = None  # Nimm None für ALLES (empfohlen für das finale Training)
 
     data_root = Path("data/audio/datasets")
@@ -105,7 +105,7 @@ def main():
     project_root = Path(__file__).parent.resolve()
     models_dir = project_root / "models"
     os.makedirs(models_dir, exist_ok=True)
-    model_path = models_dir / "unet_test_best.pth"  # Nennen wir es 'best', das ist üblicher
+    model_path = models_dir / "berta_best.pth"  # Nennen wir es 'best', das ist üblicher
 
     # --- Training Config ---
     batch_size = 24  # Perfekt für M3 Pro
@@ -239,9 +239,7 @@ def main():
             print(f"   Neuer Bestwert! Modell gespeichert unter: {model_path}")
 
         # Optional: Immer den letzten Stand auch speichern, falls Absturz
-        torch.save(model.state_dict(), models_dir / "unet_test_last.pth")
-
-
+        torch.save(model.state_dict(), models_dir / "modell_last.pth")
 
 
 if __name__ == "__main__":

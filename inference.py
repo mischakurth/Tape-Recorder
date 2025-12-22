@@ -126,7 +126,7 @@ if __name__ == "__main__":
 
     # Pfad zum Modell
     script_dir = Path(__file__).parent
-    model_file = script_dir / "models" / "unet_v1_alfred_best.pth"
+    model_file = script_dir / "models" / "unet_log_spectral.pth"
 
     output_wav = base_path / "inference_result.wav"
 

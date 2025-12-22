@@ -1,204 +1,247 @@
-import os
+from datetime import datetime
 import random
 import gc
-from datetime import datetime
 from pathlib import Path
-
 import torch
-import torch.nn.functional as F
 from torch.utils.data import DataLoader
-
-# Eigene Module
 from src.model import AudioUNet
 from src.dataset import StreamingAudioDataset
-from src.audio_processor_torch import TorchAudioProcessor
-
+from src.audio_processor import AudioProcessor
+import os
 
 # --- Hilfsfunktion zum Finden der Dateien ---
 def find_paired_files(input_dir: Path, output_dir: Path) -> list[tuple[Path, Path]]:
+    """
+    Findet Paare unabhängig von der Ordnerstruktur (ignoriert Unterordner).
+    Erstellt eine 'Map' aller Output-Dateien für extrem schnelles Finden.
+    """
     pairs = []
     print(f"--- Scanne Ordner (ignoriere Unterordner-Struktur)... ---")
-    output_map = {f.name: f for f in output_dir.rglob('*.wav') if not f.name.startswith('.')}
 
+    # 1. Wir bauen ein "Telefonbuch" aller Output-Dateien
+    # Key: Dateiname (z.B. "song-taped.wav"), Value: Der echte Pfad
+    output_map = {}
+
+    # rglob('*') sucht rekursiv in ALLEN Unterordnern
+    for f in output_dir.rglob('*.wav'):
+        if not f.name.startswith('.'):  # Versteckte Dateien ignorieren
+            output_map[f.name] = f
+
+    print(f"   -> {len(output_map)} Output-Dateien im Index gefunden.")
+
+    # 2. Input Dateien durchgehen und im "Telefonbuch" nachschlagen
+    input_cnt = 0
     for input_file in sorted(input_dir.rglob('*.wav')):
         if input_file.name.startswith('.'): continue
+        input_cnt += 1
+
+        # Generiere mögliche Namen für den Output
         stem = input_file.stem
         suffix = input_file.suffix
+
+        # Liste aller möglichen Schreibweisen, die wir akzeptieren
         candidates = [
-            stem + "-taped" + suffix, stem + "_taped" + suffix,
-            stem + " taped" + suffix, input_file.name,
+            stem + "-taped" + suffix,  # Standard
+            stem + "_taped" + suffix,  # Unterstrich
+            stem + " taped" + suffix,  # Leerzeichen
+            input_file.name,  # Identischer Name
             input_file.name.replace('vorher', 'taped'),
             input_file.name.replace('orig', 'tape')
         ]
+
+        # Prüfen, ob EINER der Kandidaten in unserer Map existiert
+        match_found = False
         for candidate in candidates:
             if candidate in output_map:
-                pairs.append((input_file, output_map[candidate]))
-                break
+                # Treffer! Wir nehmen den Pfad aus der Map
+                output_path = output_map[candidate]
+                pairs.append((input_file, output_path))
+                match_found = True
+                break  # Suche für dieses File beenden
+
+        if not match_found:
+            # Debugging: Nur einschalten wenn du wissen willst, was fehlt
+            # print(f"Miss: {input_file.name}")
+            pass
+
+    print(f"   -> {len(pairs)} Paare erfolgreich gematched (von {input_cnt} Inputs).")
     return pairs
 
 
 def get_all_file_pairs(data_root: Path, target_dataset: str | None = None) -> list[tuple[Path, Path]]:
     all_pairs = []
-    datasets = [data_root / target_dataset] if target_dataset else [d for d in data_root.iterdir() if
-                                                                    d.is_dir() and d.name.startswith("dataset-")]
+
+    if target_dataset:
+        datasets = [data_root / target_dataset]
+    else:
+        datasets = [d for d in data_root.iterdir() if d.is_dir() and d.name.startswith("dataset-")]
 
     for dataset_path in datasets:
-        if not dataset_path.exists(): continue
+        if not dataset_path.exists():
+            print(f"Warnung: Dataset {dataset_path} nicht gefunden.")
+            continue
+
         input_dir = dataset_path / "tape-input"
         output_dir = dataset_path / "tape-output-recordings"
+
         if input_dir.exists() and output_dir.exists():
             pairs = find_paired_files(input_dir, output_dir)
             all_pairs.extend(pairs)
+            print(f"Dataset {dataset_path.name}: {len(pairs)} Paare gefunden.")
+        else:
+            print(f"Warnung: Ordnerstruktur unvollständig in {dataset_path.name}")
+
     return all_pairs
 
 
-# --- PERCEPTUAL LOSS ERSATZ (Stabil auf MPS) ---
-def log_spectral_loss(pred_cnn, target_cnn):
-    """
-    Berechnet den Fehler im Log-Bereich (dB).
-    Das entspricht der menschlichen Wahrnehmung, benötigt aber keine
-    fehleranfällige ISTFT-Umwandlung.
-    """
-    # 1. Wir müssen Real/Imag in Magnitude (Lautstärke) umwandeln
-    # Input Shape: (Batch, 4, Freq, Time) -> Channels 0/1 sind Real/Imag (L), 2/3 sind (R)
-
-    # Links
-    real_L = pred_cnn[:, 0, :, :]
-    imag_L = pred_cnn[:, 1, :, :]
-    mag_pred_L = torch.sqrt(real_L ** 2 + imag_L ** 2 + 1e-7)
-
-    real_tgt_L = target_cnn[:, 0, :, :]
-    imag_tgt_L = target_cnn[:, 1, :, :]
-    mag_tgt_L = torch.sqrt(real_tgt_L ** 2 + imag_tgt_L ** 2 + 1e-7)
-
-    # Rechts
-    real_R = pred_cnn[:, 2, :, :]
-    imag_R = pred_cnn[:, 3, :, :]
-    mag_pred_R = torch.sqrt(real_R ** 2 + imag_R ** 2 + 1e-7)
-
-    real_tgt_R = target_cnn[:, 2, :, :]
-    imag_tgt_R = target_cnn[:, 3, :, :]
-    mag_tgt_R = torch.sqrt(real_tgt_R ** 2 + imag_tgt_R ** 2 + 1e-7)
-
-    # 2. Logarithmus (Dezibel-Ebene)
-    # Das ist der "Perceptual" Teil: Wir vergleichen Lautheit, nicht Energie.
-    log_pred_L = torch.log(mag_pred_L)
-    log_tgt_L = torch.log(mag_tgt_L)
-
-    log_pred_R = torch.log(mag_pred_R)
-    log_tgt_R = torch.log(mag_tgt_R)
-
-    # 3. L1 Loss auf den Log-Werten
-    loss_L = F.l1_loss(log_pred_L, log_tgt_L)
-    loss_R = F.l1_loss(log_pred_R, log_tgt_R)
-
-    return (loss_L + loss_R) / 2
-
-
 def main():
-    # --- Config ---
-    # target_dataset = "dataset-alfred"
-    target_dataset = None
+    # 1. Config
+    target_dataset = "dataset-test"
+    # target_dataset = None  # Nimm None für ALLES (empfohlen für das finale Training)
+
     data_root = Path("data/audio/datasets")
 
-    models_dir = Path(__file__).parent.resolve() / "models"
+    # Pfad zum Modell
+    project_root = Path(__file__).parent.resolve()
+    models_dir = project_root / "models"
     os.makedirs(models_dir, exist_ok=True)
-    model_path = models_dir / "unet_log_spectral_all_best.pth"
+    model_path = models_dir / "unet_test_best.pth"  # Nennen wir es 'best', das ist üblicher
 
-    batch_size = 24
+    # --- Training Config ---
+    batch_size = 24  # Perfekt für M3 Pro
     lr = 1e-4
-    epochs = 20
+    epochs = 5  # Da SlidingWindow riesig ist, reichen oft weniger Epochen!
+    load_pretrained = True  # Setze auf True, um Training fortzusetzen!
+    pretrained_model_path = models_dir / "unet_v1_alfred_best.pth"  # Pfad zum gewünschten Modell"
 
-    # --- Setup ---
+    # Daten laden
+    all_pairs = get_all_file_pairs(data_root, target_dataset)
+    print(f"Gesamt: {len(all_pairs)} Datei-Paare gefunden.")
+
+    if not all_pairs:
+        print("Keine Trainingsdaten gefunden.")
+        return
+
+    # Split
+    random.seed(42)
+    random.shuffle(all_pairs)
+    split_idx = int(len(all_pairs) * 0.80)  # 80% Training ist Standard
+    train_pairs = all_pairs[:split_idx]
+    val_pairs = all_pairs[split_idx:]
+
+    print(f"Daten Split: {len(train_pairs)} Files Training, {len(val_pairs)} Files Validierung")
+
+    # Check Device
     device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
     print(f"Training auf: {device}")
 
-    proc = TorchAudioProcessor(device=device)
+    # 2. Objekte erstellen
+    proc = AudioProcessor(sample_rate=96000)
 
-    # Daten
-    all_pairs = get_all_file_pairs(data_root, target_dataset)
-    if not all_pairs: return
+    # num_workers austesten
 
-    random.seed(42)
-    random.shuffle(all_pairs)
-    split_idx = int(len(all_pairs) * 0.9)
-    train_pairs, val_pairs = all_pairs[:split_idx], all_pairs[split_idx:]
+    # --- Training Dataset ---
+    print("Initialisiere Training Dataset...")
+    train_dataset = StreamingAudioDataset(train_pairs, proc, crop_width=256, overlap=0.5)
 
-    print(f"Training: {len(train_pairs)} | Validation: {len(val_pairs)}")
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        # prefetch_factor=2,  # <--- Wichtig für Streaming
+    )
 
-    train_loader = DataLoader(StreamingAudioDataset(train_pairs, proc), batch_size=batch_size, shuffle=True)
-    val_loader = DataLoader(StreamingAudioDataset(val_pairs, proc, overlap=0.0), batch_size=batch_size, shuffle=False)
+    # --- Validation Dataset ---
+    print("Initialisiere Validation Dataset...")
+    val_dataset = StreamingAudioDataset(val_pairs, proc, crop_width=256, overlap=0.0)
 
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        # prefetch_factor=2,     # <--- Wichtig für Streaming
+    )
+
+    print(f"Total Training Chunks: {len(train_dataset)}")
+    print(f"Total Validation Chunks: {len(val_dataset)}")
+
+    # Modell setup
     model = AudioUNet(n_channels=4, n_classes=4).to(device)
+
+    # --- RESUME LOGIC ---
+    if load_pretrained and pretrained_model_path.exists():
+        print(f"Lade existierendes Modell von {pretrained_model_path}...")
+        state_dict = torch.load(pretrained_model_path, map_location=device)
+        try:
+            model.load_state_dict(state_dict)
+        except RuntimeError as e:
+            print(f"❌ Unerwarteter Fehler beim Laden: {e}")
+    else:
+        print("Starte neues Training.")
+
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
+    # --- WICHTIGE ÄNDERUNG: L1 Loss ---
+    loss_fn = torch.nn.L1Loss()  # Besser für Audio als MSE
+
+    # 3. Training Loop
     best_val_loss = float('inf')
 
     for epoch in range(epochs):
+        # --- TRAINING ---
         model.train()
         train_loss = 0.0
 
-        print(f"Starte Epoch {epoch + 1}/{epochs} um {datetime.now().strftime('%H:%M:%S')}...")
+        print(f"Starte Epoch {epoch + 1}/{epochs}...")
+        print("um Uhrzeit", datetime.now())
+        for batch_idx, (x, y) in enumerate(train_loader):
+            x, y = x.to(device), y.to(device)
 
-        for batch_idx, (x_audio, y_audio) in enumerate(train_loader):
-            x_audio, y_audio = x_audio.to(device), y_audio.to(device)
-
-            # 1. Audio -> Spec
-            x_spec = proc.audio_to_cnn(x_audio)
-            y_spec = proc.audio_to_cnn(y_audio)
-
-            # 2. Modell
-            pred_spec = model(x_spec)
-
-            # 3. Log-Spectral Loss (Perceptual aber stabil)
-            # Wir verzichten auf Audio-Rückumwandlung im Loop!
-            loss = log_spectral_loss(pred_spec, y_spec)
-
-            if torch.isnan(loss):
-                print("⚠️ NaN Loss detected. Skipping.")
-                optimizer.zero_grad()
-                continue
+            pred = model(x)
+            loss = loss_fn(pred, y)
 
             optimizer.zero_grad()
             loss.backward()
-
-            # Leichtes Clipping zur Sicherheit
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=2.0)
-
             optimizer.step()
 
             train_loss += loss.item()
 
-            if batch_idx % 20 == 0:
-                print(f"   Batch {batch_idx}/{len(train_loader)} | Loss (dB): {loss.item():.4f}")
+            # Kleines Feedback alle 50 Batches
+            if batch_idx % 10 == 0:
+                print(f"   Batch {batch_idx}/{len(train_loader)} Loss: {loss.item():.6f}")
 
-        avg_train = train_loss / len(train_loader) if len(train_loader) > 0 else 0
+        avg_train_loss = train_loss / len(train_loader)
 
-        # --- Validation ---
+        # --- VALIDIERUNG ---
         model.eval()
-        val_total = 0.0
+        val_loss = 0.0
+
         with torch.no_grad():
-            for x_audio, y_audio in val_loader:
-                x_audio, y_audio = x_audio.to(device), y_audio.to(device)
+            for x, y in val_loader:
+                x, y = x.to(device), y.to(device)
+                pred = model(x)
+                loss = loss_fn(pred, y)
+                val_loss += loss.item()
 
-                x_spec = proc.audio_to_cnn(x_audio)
-                y_spec = proc.audio_to_cnn(y_audio)
+        avg_val_loss = val_loss / len(val_loader)
+        print(f"==> Epoch {epoch + 1} | Train Loss: {avg_train_loss:.6f} | Val Loss: {avg_val_loss:.6f}")
 
-                pred_spec = model(x_spec)
+        # --- WICHTIG: MPS SPEICHER BEREINIGUNG ---
+        # Das verhindert, dass der RAM/VRAM volläuft und das Training langsam wird.
+        if device.type == 'mps':
+            torch.mps.empty_cache()
+        gc.collect()  # Python Garbage Collector forcieren
 
-                # Wir nehmen den gleichen Loss für Val
-                val_total += log_spectral_loss(pred_spec, y_spec).item()
-
-        avg_val = val_total / len(val_loader) if len(val_loader) > 0 else 0
-
-        print(f"==> Epoch {epoch + 1} | Train: {avg_train:.4f} | Val: {avg_val:.4f}")
-
-        if avg_val < best_val_loss:
-            best_val_loss = avg_val
+        # --- Speichern (Nur wenn es das beste bisher ist) ---
+        if avg_val_loss < best_val_loss:
+            best_val_loss = avg_val_loss
             torch.save(model.state_dict(), model_path)
-            print("Neue Bestleistung, Modell gespeichert.")
+            print(f"   Neuer Bestwert! Modell gespeichert unter: {model_path}")
 
-        if device.type == 'mps': torch.mps.empty_cache()
+        # Optional: Immer den letzten Stand auch speichern, falls Absturz
+        torch.save(model.state_dict(), models_dir / "unet_test_last.pth")
+
+
 
 
 if __name__ == "__main__":

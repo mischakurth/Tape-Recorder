@@ -1,135 +1,121 @@
 import torch
 from torch.utils.data import Dataset
 import numpy as np
-from src.audio_processor import AudioProcessor
-from collections import OrderedDict
 import soundfile as sf
-import sys
+from src.audio_processor import AudioProcessor
 
 
-class SlidingWindowDataset(Dataset):
+class StreamingAudioDataset(Dataset):
     def __init__(self, file_pairs, processor: AudioProcessor, crop_width: int = 256, overlap: float = 0.5):
+        """
+        Liest Audio direkt von der Festplatte (Chunk für Chunk).
+        Minimale RAM-Last, aber höhere CPU-Last durch ständiges STFT-Berechnen.
+        """
         self.file_pairs = file_pairs
         self.processor = processor
         self.crop_width = crop_width
         self.target_height = 1040
-        self.stride = int(crop_width * (1 - overlap))
-        if self.stride < 1: self.stride = 1
 
-        # --- RAM Management ---
-        # Wir schätzen den Speicherbedarf.
-        # 1 Minute Stereo Audio als CNN-Tensor (float32) braucht ca. 350 MB.
-        # Bei 36 GB RAM können wir locker 10-15 GB nutzen.
-        self.ram_limit_gb = 12.0
+        # Berechne Samples pro Crop
+        # Formel: (Frames - 1) * Hop + n_fft
+        # Wir addieren etwas Sicherheitspuffer (+ n_fft)
+        self.samples_per_crop = (crop_width - 1) * processor.hop_length + processor.n_fft
 
-        # Cache Init
-        self.cache = OrderedDict()
-        self.preloaded_data = {}  # Speichert ALLES, wenn es passt
-        self.use_preload = False
+        # Schrittweite in Samples
+        stride_frames = int(crop_width * (1 - overlap))
+        self.stride_samples = stride_frames * processor.hop_length
+        if self.stride_samples < 1: self.stride_samples = 1
 
-        # Index erstellen
-        self.samples = []
-        self._prepare_index_and_check_memory()
+        # Index aufbauen (Nur Pfade und Start-Positionen speichern)
+        self.samples_index = []
+        self._build_index()
 
-    def _prepare_index_and_check_memory(self):
-        print("Analysiere Dataset & Speicherbedarf...")
-        total_frames_estimated = 0
+    def _build_index(self):
+        print(f"Indiziere {len(self.file_pairs)} Dateien für Streaming...")
 
-        for file_idx, (in_path, _) in enumerate(self.file_pairs):
-            # Schnell-Check der Länge
+        for file_idx, (in_path, tgt_path) in enumerate(self.file_pairs):
+            # Nur Header lesen für Länge (sehr schnell)
             info = sf.info(str(in_path))
-            # STFT Frames Schätzung
-            num_frames = 1 + int(info.frames / self.processor.hop_length)
-            total_frames_estimated += num_frames
+            total_samples = info.frames
 
-            # Sliding Window Index berechnen
-            max_start = num_frames - self.crop_width
+            # Berechne Startpunkte
+            max_start = total_samples - self.samples_per_crop
             if max_start > 0:
-                starts = range(0, max_start, self.stride)
+                # Range(start, stop, step)
+                starts = range(0, max_start, self.stride_samples)
                 for s in starts:
-                    self.samples.append((file_idx, s))
+                    self.samples_index.append((file_idx, s))
 
-        # Speicher-Schätzung:
-        # (4 Channels * 1040 Freq * Frames * 4 Bytes * 2 (Input+Target)) / 1024^3
-        estimated_gb = (total_frames_estimated * 4 * 1040 * 4 * 2) / (1024 ** 3)
-        print(f"Index fertig: {len(self.samples)} Chunks.")
-        print(f"Geschätzter RAM-Bedarf für vollständiges Laden: {estimated_gb:.2f} GB")
+            # WICHTIG: Auch den letzten Rest mitnehmen (der kürzer sein kann)
+            # Das ist besonders für die Validierung wichtig, damit wir den Song bis zum Ende hören
+            # Bei overlap=0.0 bleibt oft ein Rest übrig. Wir fügen ihn hinzu und padden ihn später.
+            # (Optionaler Schritt, falls du wirklich ALLES hören willst. Der einfache Loop oben reicht meist.)
 
-        if estimated_gb < self.ram_limit_gb:
-            print(
-                "🚀 Dataset passt in den RAM! Starte Preloading (das dauert kurz, beschleunigt aber das Training enorm)...")
-            self.use_preload = True
-            self._preload_all()
-        else:
-            print(f"⚠️ Dataset zu groß für RAM-Limit ({self.ram_limit_gb} GB). Nutze Smart-Caching.")
-            # Cache Größe erhöhen: Mindestens 4 Songs sollten reinpassen, um Thrashing zu reduzieren
-            self.cache_limit = 4
-
-    def _preload_all(self):
-        for i in range(len(self.file_pairs)):
-            self.preloaded_data[i] = self._load_and_process_file(i)
-            # Kleiner Progress-Indikator
-            print(f"   Lade Datei {i + 1}/{len(self.file_pairs)} in RAM...", end='\r')
-        print("\nPreloading abgeschlossen.")
-
-    def _load_and_process_file(self, file_idx):
-        in_path, tgt_path = self.file_pairs[file_idx]
-
-        # 1. Input
-        y_in = self.processor.load_audio(str(in_path))
-        stft_in = self.processor.audio_to_stft(y_in)
-        cnn_in = self.processor.stft_to_cnn_input(stft_in)
-
-        # 2. Target
-        y_tgt = self.processor.load_audio(str(tgt_path))
-        stft_tgt = self.processor.audio_to_stft(y_tgt)
-        cnn_tgt = self.processor.stft_to_cnn_input(stft_tgt)
-
-        # 3. Padding (Freq)
-        c, h, w = cnn_in.shape
-        pad_height = self.target_height - h
-        if pad_height > 0:
-            cnn_in = np.pad(cnn_in, ((0, 0), (0, pad_height), (0, 0)), mode='constant')
-            cnn_tgt = np.pad(cnn_tgt, ((0, 0), (0, pad_height), (0, 0)), mode='constant')
-
-        # Länge angleichen
-        min_len = min(cnn_in.shape[2], cnn_tgt.shape[2])
-        return (cnn_in[:, :, :min_len], cnn_tgt[:, :, :min_len])
-
-    def _get_data(self, file_idx):
-        # Modus A: Alles im RAM
-        if self.use_preload:
-            return self.preloaded_data[file_idx]
-
-        # Modus B: Cache (für riesige Datasets)
-        if file_idx in self.cache:
-            self.cache.move_to_end(file_idx)
-            return self.cache[file_idx]
-
-        # Load & Cache
-        data = self._load_and_process_file(file_idx)
-        self.cache[file_idx] = data
-        if len(self.cache) > self.cache_limit:
-            self.cache.popitem(last=False)
-        return data
+        print(f"Index fertig: {len(self.samples_index)} Chunks bereit zum Streamen.")
 
     def __len__(self):
-        return len(self.samples)
+        return len(self.samples_index)
 
     def __getitem__(self, idx):
-        file_idx, start_frame = self.samples[idx]
+        file_idx, start_sample = self.samples_index[idx]
+        in_path, tgt_path = self.file_pairs[file_idx]
 
-        # Blitzschneller Zugriff (da im RAM oder Cache)
-        full_input, full_target = self._get_data(file_idx)
+        # 1. Nur den kleinen Ausschnitt laden (IO-Operation)
+        stop_sample = start_sample + self.samples_per_crop
 
-        end_frame = start_frame + self.crop_width
+        # sf.read lädt exakt diesen Bereich
+        # always_2d=True sorgt für (samples, channels) Format
+        y_in, _ = sf.read(str(in_path), start=start_sample, stop=stop_sample, always_2d=True)
+        y_tgt, _ = sf.read(str(tgt_path), start=start_sample, stop=stop_sample, always_2d=True)
 
-        # Safety Check falls File kürzer als erwartet (Rundungsfehler)
-        if end_frame > full_input.shape[2]:
-            end_frame = full_input.shape[2]
-            start_frame = end_frame - self.crop_width
+        # Transponieren zu (Channels, Samples)
+        y_in = y_in.T
+        y_tgt = y_tgt.T
 
-        crop_in = full_input[:, :, start_frame:end_frame]
-        crop_target = full_target[:, :, start_frame:end_frame]
+        # Falls Mono, zu Pseudo-Stereo machen
+        if y_in.shape[0] == 1:
+            y_in = np.concatenate([y_in, y_in], axis=0)
+        if y_tgt.shape[0] == 1:
+            y_tgt = np.concatenate([y_tgt, y_tgt], axis=0)
 
-        return torch.from_numpy(crop_in).float(), torch.from_numpy(crop_target).float()
+        # 2. STFT Berechnung On-The-Fly
+        stft_in = self.processor.audio_to_stft(y_in)
+        stft_tgt = self.processor.audio_to_stft(y_tgt)
+
+        # 3. CNN Input Konvertierung
+        cnn_in = self.processor.stft_to_cnn_input(stft_in)
+        cnn_tgt = self.processor.stft_to_cnn_input(stft_tgt)
+
+        # 4. Frequency Padding (Höhe anpassen: x -> 1040)
+        # Input
+        c, h, w = cnn_in.shape
+        pad_h = self.target_height - h
+        if pad_h > 0:
+            cnn_in = np.pad(cnn_in, ((0, 0), (0, pad_h), (0, 0)), mode='constant')
+
+        # Target (separat prüfen!)
+        c_t, h_t, w_t = cnn_tgt.shape
+        pad_h_t = self.target_height - h_t
+        if pad_h_t > 0:
+            cnn_tgt = np.pad(cnn_tgt, ((0, 0), (0, pad_h_t), (0, 0)), mode='constant')
+
+        # 5. Time Padding (Breite anpassen: x -> 256) [DER FIX]
+        # Wir müssen BEIDE separat prüfen, falls das Target-File kürzer ist als der Input
+
+        # Check Input
+        current_width_in = cnn_in.shape[2]
+        if current_width_in < self.crop_width:
+            pad_w = self.crop_width - current_width_in
+            cnn_in = np.pad(cnn_in, ((0, 0), (0, 0), (0, pad_w)), mode='constant')
+
+        # Check Target (Das hat gefehlt!)
+        current_width_tgt = cnn_tgt.shape[2]
+        if current_width_tgt < self.crop_width:
+            pad_w = self.crop_width - current_width_tgt
+            cnn_tgt = np.pad(cnn_tgt, ((0, 0), (0, 0), (0, pad_w)), mode='constant')
+
+        # 6. Slicing (Falls durch Rundung 1 Frame zu viel da ist)
+        cnn_in = cnn_in[:, :, :self.crop_width]
+        cnn_tgt = cnn_tgt[:, :, :self.crop_width]
+
+        return torch.from_numpy(cnn_in).float(), torch.from_numpy(cnn_tgt).float()

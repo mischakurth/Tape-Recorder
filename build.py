@@ -4,14 +4,29 @@ from pathlib import Path
 
 # --- KONFIGURATION ---
 DIST_DIR = Path("dist/tape-simulator")
+
+# Dein Modell (Pfad anpassen, falls sich der Name ändert!)
 MODEL_SOURCE = Path("models/berta_best.pth")
-FILES_TO_COPY = ["app.py", "requirements.txt"]
-SRC_FILES = ["src/__init__.py", "src/model.py", "src/audio_processor.py"]
+
+# Ordner, die komplett kopiert werden sollen
+SRC_DIRS = ["src"]
+
+# Einzeldateien: "Quelle im Projekt" -> "Name im Zielordner"
+FILE_MAPPING = {
+    "app.py": "app.py",
+    "requirements.txt": "requirements.txt",
+
+    # Hier wird deine USER_README zur README.txt für den Nutzer
+    "USER_README.md": "README.txt"
+}
 
 
 def create_start_scripts(dist_path):
-    # Windows (.bat) - bleibt gleich
-    with open(dist_path / "start_windows.bat", "w") as f:
+    """
+    Erstellt nur die Start-Skripte (die einzigen Dateien, die wir generieren).
+    """
+    # Windows (.bat)
+    with open(dist_path / "start_windows.bat", "w", encoding="utf-8") as f:
         f.write('@echo off\n')
         f.write('echo Installiere fehlende Bibliotheken...\n')
         f.write('pip install -r requirements.txt\n')
@@ -19,49 +34,62 @@ def create_start_scripts(dist_path):
         f.write('streamlit run app.py\n')
         f.write('pause\n')
 
-    # Mac/Linux (.command) - WICHTIGE ÄNDERUNG
-    # .command erzwingt das Öffnen im Terminal bei MacOS
+    # Mac/Linux (.command)
     sh_path = dist_path / "start_mac.command"
-    with open(sh_path, "w") as f:
+    with open(sh_path, "w", encoding="utf-8") as f:
         f.write('#!/bin/bash\n')
-        # Ins Verzeichnis des Skripts wechseln (Wichtig bei .command!)
         f.write('cd "$(dirname "$0")"\n')
         f.write('echo "Installiere Bibliotheken..."\n')
         f.write('pip install -r requirements.txt\n')
         f.write('echo "Starte Tape Simulator..."\n')
         f.write('streamlit run app.py\n')
 
-    # Ausführbar machen (rwxr-xr-x)
+    # Ausführbar machen
     os.chmod(sh_path, 0o755)
 
 
 def main():
-    print(f"Erstelle Release in {DIST_DIR}...")
+    print(f"📦 Erstelle Release in: {DIST_DIR} ...")
 
-    # 1. Clean Build
+    # 1. Clean Build (Alten Ordner löschen)
     if DIST_DIR.exists(): shutil.rmtree(DIST_DIR)
     DIST_DIR.mkdir(parents=True)
-    (DIST_DIR / "src").mkdir()
+
+    # Unterordner erstellen
     (DIST_DIR / "models").mkdir()
 
-    # 2. Dateien kopieren
-    for f in FILES_TO_COPY:
-        if Path(f).exists(): shutil.copy(f, DIST_DIR / f)
+    # 2. Ordner kopieren (src/)
+    for folder in SRC_DIRS:
+        src = Path(folder)
+        dst = DIST_DIR / folder
+        if src.exists():
+            shutil.copytree(src, dst)
+            print(f"✅ Ordner kopiert: {folder}")
+        else:
+            print(f"⚠️ Warnung: Ordner '{folder}' nicht gefunden!")
 
-    for f in SRC_FILES:
-        if Path(f).exists(): shutil.copy(f, DIST_DIR / "src" / Path(f).name)
+    # 3. Einzeldateien kopieren (App, Readme, Requirements)
+    for src_name, dst_name in FILE_MAPPING.items():
+        src = Path(src_name)
+        dst = DIST_DIR / dst_name
 
-    # 3. Modell kopieren
+        if src.exists():
+            shutil.copy(src, dst)
+            print(f"✅ Datei kopiert: {src_name} -> {dst_name}")
+        else:
+            print(f"❌ FEHLER: Datei '{src_name}' fehlt im Hauptverzeichnis!")
+
+    # 4. Modell kopieren
     if MODEL_SOURCE.exists():
         shutil.copy(MODEL_SOURCE, DIST_DIR / "models" / MODEL_SOURCE.name)
-        print("Modell kopiert.")
+        print(f"✅ Modell kopiert: {MODEL_SOURCE.name}")
     else:
-        print(f"ACHTUNG: Modell nicht gefunden unter {MODEL_SOURCE}!")
+        print(f"❌ FEHLER: Modell nicht gefunden unter {MODEL_SOURCE}")
 
-    # 4. Start-Skripte
+    # 5. Start-Skripte generieren
     create_start_scripts(DIST_DIR)
 
-    print("Fertig. Der Ordner 'dist/tape-simulator' ist bereit.")
+    print(f"\n🎉 Fertig! Der Ordner '{DIST_DIR}' ist bereit.")
 
 
 if __name__ == "__main__":

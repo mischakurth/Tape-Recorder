@@ -96,8 +96,8 @@ def get_all_file_pairs(data_root: Path, target_dataset: str | None = None) -> li
 
 def main():
     # 1. Config
-    target_dataset = "dataset-berta"
-    # target_dataset = None  # Nimm None für ALLES (empfohlen für das finale Training)
+    # target_dataset = "dataset-charlie"
+    target_dataset = None  # Nimm None für ALLES (empfohlen für das finale Training)
 
     data_root = Path("data/audio/datasets")
 
@@ -105,14 +105,14 @@ def main():
     project_root = Path(__file__).parent.resolve()
     models_dir = project_root / "models"
     os.makedirs(models_dir, exist_ok=True)
-    model_path = models_dir / "berta_best.pth"  # Nennen wir es 'best', das ist üblicher
+    model_path = models_dir / "overall_best_started_2212_1335.pth"  # Nennen wir es 'best', das ist üblicher
 
     # --- Training Config ---
     batch_size = 24  # Perfekt für M3 Pro
     lr = 1e-4
-    epochs = 5  # Da SlidingWindow riesig ist, reichen oft weniger Epochen!
-    load_pretrained = True  # Setze auf True, um Training fortzusetzen!
-    pretrained_model_path = models_dir / "unet_v1_alfred_best.pth"  # Pfad zum gewünschten Modell"
+    epochs = 10  # Da SlidingWindow riesig ist, reichen oft weniger Epochen!
+    load_pretrained = False  # Setze auf True, um Training fortzusetzen!
+    pretrained_model_path = models_dir / "berta_best.pth"  # Pfad zum gewünschten Modell"
 
     # Daten laden
     all_pairs = get_all_file_pairs(data_root, target_dataset)

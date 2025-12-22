@@ -1,34 +1,70 @@
+from datetime import datetime
 import random
 import gc
 from pathlib import Path
 import torch
 from torch.utils.data import DataLoader
 from src.model import AudioUNet
-from src.dataset import SlidingWindowDataset
+from src.dataset import StreamingAudioDataset
 from src.audio_processor import AudioProcessor
 import os
-
 
 # --- Hilfsfunktion zum Finden der Dateien ---
 def find_paired_files(input_dir: Path, output_dir: Path) -> list[tuple[Path, Path]]:
     """
-    Findet Paare von Eingabe- und Ausgabe-Dateien basierend auf der Namenskonvention.
+    Findet Paare unabhängig von der Ordnerstruktur (ignoriert Unterordner).
+    Erstellt eine 'Map' aller Output-Dateien für extrem schnelles Finden.
     """
     pairs = []
-    # Rekursive Suche nach wav Dateien
+    print(f"--- Scanne Ordner (ignoriere Unterordner-Struktur)... ---")
+
+    # 1. Wir bauen ein "Telefonbuch" aller Output-Dateien
+    # Key: Dateiname (z.B. "song-taped.wav"), Value: Der echte Pfad
+    output_map = {}
+
+    # rglob('*') sucht rekursiv in ALLEN Unterordnern
+    for f in output_dir.rglob('*.wav'):
+        if not f.name.startswith('.'):  # Versteckte Dateien ignorieren
+            output_map[f.name] = f
+
+    print(f"   -> {len(output_map)} Output-Dateien im Index gefunden.")
+
+    # 2. Input Dateien durchgehen und im "Telefonbuch" nachschlagen
+    input_cnt = 0
     for input_file in sorted(input_dir.rglob('*.wav')):
-        if 'vorher' in input_file.name:
-            out_name = input_file.name.replace('vorher', 'taped')
-        elif 'orig' in input_file.name:
-            out_name = input_file.name.replace('orig', 'tape')
-        else:
-            out_name = input_file.name
+        if input_file.name.startswith('.'): continue
+        input_cnt += 1
 
-        possible_output = output_dir / out_name
+        # Generiere mögliche Namen für den Output
+        stem = input_file.stem
+        suffix = input_file.suffix
 
-        if possible_output.exists():
-            pairs.append((input_file, possible_output))
+        # Liste aller möglichen Schreibweisen, die wir akzeptieren
+        candidates = [
+            stem + "-taped" + suffix,  # Standard
+            stem + "_taped" + suffix,  # Unterstrich
+            stem + " taped" + suffix,  # Leerzeichen
+            input_file.name,  # Identischer Name
+            input_file.name.replace('vorher', 'taped'),
+            input_file.name.replace('orig', 'tape')
+        ]
 
+        # Prüfen, ob EINER der Kandidaten in unserer Map existiert
+        match_found = False
+        for candidate in candidates:
+            if candidate in output_map:
+                # Treffer! Wir nehmen den Pfad aus der Map
+                output_path = output_map[candidate]
+                pairs.append((input_file, output_path))
+                match_found = True
+                break  # Suche für dieses File beenden
+
+        if not match_found:
+            # Debugging: Nur einschalten wenn du wissen willst, was fehlt
+            # print(f"Miss: {input_file.name}")
+            pass
+
+    print(f"   -> {len(pairs)} Paare erfolgreich gematched (von {input_cnt} Inputs).")
     return pairs
 
 
@@ -60,8 +96,8 @@ def get_all_file_pairs(data_root: Path, target_dataset: str | None = None) -> li
 
 def main():
     # 1. Config
-    target_dataset = "dataset-test"
-    # target_dataset = None  # Nimm None für ALLES (empfohlen für das finale Training)
+    # target_dataset = "dataset-alfred"
+    target_dataset = None  # Nimm None für ALLES (empfohlen für das finale Training)
 
     data_root = Path("data/audio/datasets")
 
@@ -69,12 +105,12 @@ def main():
     project_root = Path(__file__).parent.resolve()
     models_dir = project_root / "models"
     os.makedirs(models_dir, exist_ok=True)
-    model_path = models_dir / "unet_v1_best.pth"  # Nennen wir es 'best', das ist üblicher
+    model_path = models_dir / "unet_v1_all_best.pth"  # Nennen wir es 'best', das ist üblicher
 
     # --- Training Config ---
-    batch_size = 16  # Perfekt für M3 Pro
+    batch_size = 24  # Perfekt für M3 Pro
     lr = 1e-4
-    epochs = 10  # Da SlidingWindow riesig ist, reichen oft weniger Epochen!
+    epochs = 5  # Da SlidingWindow riesig ist, reichen oft weniger Epochen!
     load_pretrained = False  # Setze auf True, um Training fortzusetzen!
 
     # Daten laden
@@ -101,39 +137,28 @@ def main():
     # 2. Objekte erstellen
     proc = AudioProcessor(sample_rate=96000)
 
+    # num_workers austesten
+
     # --- Training Dataset ---
     print("Initialisiere Training Dataset...")
-    train_dataset = SlidingWindowDataset(train_pairs, proc, crop_width=256, overlap=0.5)
-
-    # Automatische Worker-Entscheidung
-    if train_dataset.use_preload:
-        print("Dataset im RAM: Setze num_workers=0 (schnellster Modus)")
-        train_workers = 0
-    else:
-        print("Dataset auf Disk: Setze num_workers=4 (Hintergrund-Laden)")
-        train_workers = 4
+    train_dataset = StreamingAudioDataset(train_pairs, proc, crop_width=256, overlap=0.5)
 
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,
         shuffle=True,
-        num_workers=train_workers,
-        pin_memory=False
+        # prefetch_factor=2,  # <--- Wichtig für Streaming
     )
 
     # --- Validation Dataset ---
     print("Initialisiere Validation Dataset...")
-    val_dataset = SlidingWindowDataset(val_pairs, proc, crop_width=256, overlap=0.0)
-
-    # Auch hier automatisch prüfen
-    val_workers = 0 if val_dataset.use_preload else 2
+    val_dataset = StreamingAudioDataset(val_pairs, proc, crop_width=256, overlap=0.0)
 
     val_loader = DataLoader(
         val_dataset,
         batch_size=batch_size,
         shuffle=False,
-        num_workers=val_workers,
-        pin_memory=False
+        # prefetch_factor=2,     # <--- Wichtig für Streaming
     )
 
     print(f"Total Training Chunks: {len(train_dataset)}")
@@ -164,6 +189,7 @@ def main():
         train_loss = 0.0
 
         print(f"Starte Epoch {epoch + 1}/{epochs}...")
+        print("um Uhrzeit", datetime.now())
         for batch_idx, (x, y) in enumerate(train_loader):
             x, y = x.to(device), y.to(device)
 
@@ -176,8 +202,8 @@ def main():
 
             train_loss += loss.item()
 
-            # Kleines Feedback alle 100 Batches
-            if batch_idx % 100 == 0:
+            # Kleines Feedback alle 50 Batches
+            if batch_idx % 10 == 0:
                 print(f"   Batch {batch_idx}/{len(train_loader)} Loss: {loss.item():.6f}")
 
         avg_train_loss = train_loss / len(train_loader)
@@ -209,7 +235,7 @@ def main():
             print(f"   Neuer Bestwert! Modell gespeichert unter: {model_path}")
 
         # Optional: Immer den letzten Stand auch speichern, falls Absturz
-        torch.save(model.state_dict(), models_dir / "unet_last.pth")
+        torch.save(model.state_dict(), models_dir / "unet_alfred_last.pth")
 
 
 if __name__ == "__main__":

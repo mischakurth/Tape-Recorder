@@ -6,7 +6,7 @@ from pathlib import Path
 DIST_DIR = Path("dist/tape-simulator")
 
 # Dein Modell (Pfad anpassen, falls sich der Name ändert!)
-MODEL_SOURCE = Path("models/charlie_best.pth")
+MODEL_SOURCE = Path("models/best_model.pth")
 
 # Ordner, die komplett kopiert werden sollen
 SRC_DIRS = ["src"]

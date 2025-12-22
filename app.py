@@ -1,13 +1,16 @@
-import streamlit as st
 import torch
 import soundfile as sf
 import numpy as np
 import io
-import os
 import gc
 import matplotlib.pyplot as plt
 import librosa
 import librosa.display
+import threading
+import time
+import os
+import streamlit as st
+from streamlit.runtime import get_instance
 
 # Importiere deine Projekt-Module
 from src.model import AudioUNet
@@ -194,7 +197,49 @@ def plot_advanced_analysis(clean_audio, taped_audio, sr):
     return fig
 
 
+def start_watchdog():
+    """
+    Ein Hintergrund-Thread, der prüft, ob noch Browser-Sessions aktiv sind.
+    Wenn keine Session mehr aktiv ist (Nutzer hat Tab geschlossen),
+    wird der Prozess beendet.
+    """
+    # Verhindert, dass der Watchdog mehrfach gestartet wird (bei Reruns)
+    if "watchdog_started" in st.session_state:
+        return
+
+    st.session_state.watchdog_started = True
+
+    def watchdog_logic():
+        # Warte kurz beim Start, damit der Browser Zeit hat sich zu verbinden
+        time.sleep(3)
+
+        while True:
+            try:
+                runtime = get_instance()
+                # Prüfe Anzahl der verbundenen Sessions
+                if runtime and runtime._session_mgr:
+                    active_sessions = runtime._session_mgr.list_active_sessions()
+
+                    if not active_sessions:
+                        print("🚫 Keine aktive Session mehr. Fahre herunter...")
+                        # os._exit(0) ist ein harter Kill für den Prozess
+                        os._exit(0)
+            except Exception as e:
+                # Falls Streamlit intern was ändert, ignorieren wir Fehler lieber
+                # statt abzustürzen
+                pass
+
+            # Alle 2 Sekunden prüfen
+            time.sleep(2)
+
+    # Thread als 'Daemon' starten (stirbt automatisch, wenn Hauptprogramm stirbt)
+    thread = threading.Thread(target=watchdog_logic, daemon=True)
+    thread.start()
+
+
+
 def main():
+    start_watchdog()
     st.title("📼 Tape Recorder Simulator")
     st.markdown("""
     Lade eine saubere, digitale `.wav` Datei hoch. 

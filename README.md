@@ -62,6 +62,7 @@ We want to digitally reproduce the sound characteristics of an old tape recorder
 │                     └─────────────────┘                                     │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
+```
 
 ---
 
@@ -106,6 +107,7 @@ brew install ffmpeg
 
 # Ubuntu/Debian
 sudo apt install ffmpeg
+```
 
 ---
 

@@ -4,9 +4,10 @@ import gc
 from pathlib import Path
 import torch
 from torch.utils.data import DataLoader
-from src.model import AudioUNet
+from src.model import AudioUNet, ResidualBlock, DoubleConv
 from src.dataset import StreamingAudioDataset
 from src.audio_processor import AudioProcessor
+from src.experiment_manager import ExperimentManager
 import os
 
 # --- Hilfsfunktion zum Finden der Dateien ---
@@ -95,105 +96,158 @@ def get_all_file_pairs(data_root: Path, target_dataset: str | None = None) -> li
 
 
 def main():
-    # 1. Config
-    target_dataset = "dataset-berta"
-    target_dataset = None  # Nimm None für ALLES (empfohlen für das finale Training)
-
-    data_root = Path("data/audio/datasets")
-
-    # Pfad zum Modell
+    # --- SETUP ---
+    # Basis-Pfade relativ zur Datei bestimmen
     project_root = Path(__file__).parent.resolve()
     models_dir = project_root / "models"
     os.makedirs(models_dir, exist_ok=True)
-    model_path = models_dir / "32_basechannels_3_kernelsize.pth"
 
-    # --- Training Config ---
-    batch_size = 24  # Perfekt für M3 Pro
-    lr = 1e-4
-    epochs = 10  # Da SlidingWindow riesig ist, reichen oft weniger Epochen!
-    load_pretrained = False  # Setze auf True, um Training fortzusetzen!
-    pretrained_model_path = models_dir / "best_model.pth"  # Pfad zum gewünschten Modell"
+    # 1. Experiment Manager initialisieren
+    manager = ExperimentManager(models_dir)
 
-    # Daten laden
+    # --- CONFIGURATION ---
+    # Wähle hier die Modell-Architektur: "standard" oder "resnet"
+    variant_name = "resnet"
+
+    # Soll nach dem letzten Checkpoint dieser Variante gesucht werden?
+    resume_mode = True
+
+    # Config Dictionary (wird im JSON gespeichert)
+    config = {
+        "batch_size": 24,
+        "lr": 1e-4,
+        "epochs": 5,
+        "loss": "L1Loss",
+        "dataset_overlap_train": 0.5,
+        "dataset_overlap_val": 0.0
+    }
+
+    # Architektur-Mapping
+    variants_map = {
+        "standard": DoubleConv,
+        "resnet": ResidualBlock
+    }
+
+    if variant_name not in variants_map:
+        raise ValueError(f"Unbekannte Variante '{variant_name}'. Verfügbar: {list(variants_map.keys())}")
+
+    # --- DATENPFADE ---
+    # Nimm None für ALLES (alle Dataset-Ordner)
+    target_dataset = "dataset-charlie" # None um alle Daten zu laden
+    # Passe diesen Pfad ggf. an deine Struktur an (hier relativ zum Projekt-Root)
+    data_root = project_root / "data" / "audio" / "datasets"
+
+    # --- AUTOMATISCHES RESUME HANDLING ---
+    pretrained_path = None
+    # Manueller Pfad für alte Modelle (setze auf None, wenn nicht benötigt)
+    # Beispiel: project_root / "models" / "altes_backup" / "best_model.pth"
+    manual_path = None
+
+    if manual_path and Path(manual_path).exists():
+        pretrained_path = Path(manual_path)
+        print(f"--> ⚠️ Lade manuell definiertes Modell (Legacy): {pretrained_path.name}")
+    elif resume_mode:
+        # Frage den Manager nach dem letzten Stand dieser Variante
+        pretrained_path = manager.get_latest_checkpoint(variant_name)
+
+        if pretrained_path:
+            print(f"--> Resume aktiv. Setze fort von Run: {pretrained_path.parent.name}")
+        else:
+            print("--> Kein vorheriger Run gefunden. Starte neu.")
+
+    # --- NEUEN RUN STARTEN ---
+    # Bestimme schönen Namen für den Ordner (z.B. "All" oder "Berta")
+    if target_dataset is None:
+        dataset_label = "All"
+    else:
+        # Entfernt "dataset-" und macht den ersten Buchstaben groß (dataset-berta -> Berta)
+        dataset_label = target_dataset.replace("dataset-", "").capitalize()
+
+    # Wir erstellen IMMER einen neuen Ordner, damit die Historie sauber bleibt.
+    run_dir = manager.start_new_run(variant_name, dataset_label, config)
+
+    best_model_path = run_dir / "best.pth"
+    last_model_path = run_dir / "last.pth"
+
+    print(f"--> Experiment Output Ordner: {run_dir}")
+
+    # --- DATASET LADEN ---
     all_pairs = get_all_file_pairs(data_root, target_dataset)
     print(f"Gesamt: {len(all_pairs)} Datei-Paare gefunden.")
 
     if not all_pairs:
-        print("Keine Trainingsdaten gefunden.")
+        print("❌ FEHLER: Keine Trainingsdaten gefunden. Pfad prüfen!")
         return
 
-    # Split
+    # Split (80/20)
     random.seed(42)
     random.shuffle(all_pairs)
-    split_idx = int(len(all_pairs) * 0.80)  # 80% Training ist Standard
+    split_idx = int(len(all_pairs) * 0.80)
     train_pairs = all_pairs[:split_idx]
     val_pairs = all_pairs[split_idx:]
 
-    print(f"Daten Split: {len(train_pairs)} Files Training, {len(val_pairs)} Files Validierung")
+    print(f"Daten Split: {len(train_pairs)} Training | {len(val_pairs)} Validierung")
 
-    # Check Device
+    # --- DEVICE SETUP ---
     device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
-    print(f"Training auf: {device}")
+    print(f"Training auf Device: {device}")
 
-    # 2. Objekte erstellen
+    # --- DATA LOADER ---
     proc = AudioProcessor(sample_rate=96000)
 
-    # num_workers austesten
-
-    # --- Training Dataset ---
-    print("Initialisiere Training Dataset...")
-    train_dataset = StreamingAudioDataset(train_pairs, proc, crop_width=256, overlap=0.5)
-
+    print("Initialisiere Datasets...")
+    # Training mit Overlap für mehr Daten
+    train_dataset = StreamingAudioDataset(train_pairs, proc, crop_width=256, overlap=config["dataset_overlap_train"])
     train_loader = DataLoader(
         train_dataset,
-        batch_size=batch_size,
+        batch_size=config["batch_size"],
         shuffle=True,
-        # prefetch_factor=2,  # <--- Wichtig für Streaming
     )
 
-    # --- Validation Dataset ---
-    print("Initialisiere Validation Dataset...")
-    val_dataset = StreamingAudioDataset(val_pairs, proc, crop_width=256, overlap=0.0)
-
+    # Validierung ohne Overlap (schneller & realistischer)
+    val_dataset = StreamingAudioDataset(val_pairs, proc, crop_width=256, overlap=config["dataset_overlap_val"])
     val_loader = DataLoader(
         val_dataset,
-        batch_size=batch_size,
+        batch_size=config["batch_size"],
         shuffle=False,
-        # prefetch_factor=2,     # <--- Wichtig für Streaming
     )
 
-    print(f"Total Training Chunks: {len(train_dataset)}")
-    print(f"Total Validation Chunks: {len(val_dataset)}")
+    print(f"Chunks pro Epoche: Train={len(train_dataset)}, Val={len(val_dataset)}")
 
-    # Modell setup
-    model = AudioUNet(n_channels=4, n_classes=4).to(device)
+    # --- MODELL SETUP ---
+    print(f"Initialisiere Modell-Variante: {variant_name}")
+    chosen_block = variants_map[variant_name]
 
-    # --- RESUME LOGIC ---
-    if load_pretrained and pretrained_model_path.exists():
-        print(f"Lade existierendes Modell von {pretrained_model_path}...")
-        state_dict = torch.load(pretrained_model_path, map_location=device)
+    model = AudioUNet(n_channels=4, n_classes=4, block_class=chosen_block).to(device)
+
+    # Gewichte laden (falls Resume)
+    if pretrained_path:
+        print(f"Lade Gewichte von {pretrained_path}...")
         try:
+            state_dict = torch.load(pretrained_path, map_location=device)
             model.load_state_dict(state_dict)
+            print("✅ Gewichte erfolgreich geladen.")
         except RuntimeError as e:
-            print(f"❌ Unerwarteter Fehler beim Laden: {e}")
-    else:
-        print("Starte neues Training.")
+            print(f"❌ Fehler beim Laden der Gewichte (Architektur passt nicht?): {e}")
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    # Optimizer & Loss
+    optimizer = torch.optim.Adam(model.parameters(), lr=config["lr"])
+    loss_fn = torch.nn.L1Loss()
 
-    # --- WICHTIGE ÄNDERUNG: L1 Loss ---
-    loss_fn = torch.nn.L1Loss()  # Besser für Audio als MSE
-
-    # 3. Training Loop
+    # --- TRAINING LOOP ---
+    # Wir starten 'best_val_loss' bei Unendlich oder dem Wert aus dem alten Run (falls wir das auslesen würden).
+    # Hier starten wir sauber neu für den aktuellen Run-Ordner.
     best_val_loss = float('inf')
 
-    for epoch in range(epochs):
-        # --- TRAINING ---
+    print(f"Starte Training über {config['epochs']} Epochen...")
+
+    for epoch in range(config["epochs"]):
+        start_time = datetime.now()
+
+        # 1. Training
         model.train()
         train_loss = 0.0
 
-        print(f"Starte Epoch {epoch + 1}/{epochs}...")
-        print("um Uhrzeit", datetime.now())
         for batch_idx, (x, y) in enumerate(train_loader):
             x, y = x.to(device), y.to(device)
 
@@ -206,16 +260,15 @@ def main():
 
             train_loss += loss.item()
 
-            # Kleines Feedback alle 50 Batches
+            # Log alle 50 Batches
             if batch_idx % 10 == 0:
-                print(f"   Batch {batch_idx}/{len(train_loader)} Loss: {loss.item():.6f}")
+                print(f"   [Epoch {epoch + 1}] Batch {batch_idx}/{len(train_loader)} | Loss: {loss.item():.6f}")
 
         avg_train_loss = train_loss / len(train_loader)
 
-        # --- VALIDIERUNG ---
+        # 2. Validierung
         model.eval()
         val_loss = 0.0
-
         with torch.no_grad():
             for x, y in val_loader:
                 x, y = x.to(device), y.to(device)
@@ -224,23 +277,34 @@ def main():
                 val_loss += loss.item()
 
         avg_val_loss = val_loss / len(val_loader)
-        print(f"==> Epoch {epoch + 1} | Train Loss: {avg_train_loss:.6f} | Val Loss: {avg_val_loss:.6f}")
 
-        # --- WICHTIG: MPS SPEICHER BEREINIGUNG ---
-        # Das verhindert, dass der RAM/VRAM volläuft und das Training langsam wird.
-        if device.type == 'mps':
-            torch.mps.empty_cache()
-        gc.collect()  # Python Garbage Collector forcieren
+        # Zeitmessung
+        duration = datetime.now() - start_time
+        print(
+            f"==> End Epoch {epoch + 1} | Train Loss: {avg_train_loss:.6f} | Val Loss: {avg_val_loss:.6f} | Time: {duration}")
 
-        # --- Speichern (Nur wenn es das beste bisher ist) ---
+        # 3. Speichern & Manager Update
+
+        # 'Last' speichern wir immer
+        torch.save(model.state_dict(), last_model_path)
+
+        # 'Best' prüfen
+        is_best = False
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
-            torch.save(model.state_dict(), model_path)
-            print(f"   Neuer Bestwert! Modell gespeichert unter: {model_path}")
+            is_best = True
+            torch.save(model.state_dict(), best_model_path)
+            print(f"   🏆 Neuer Bestwert! Gespeichert in: {best_model_path.name}")
 
-        # Optional: Immer den letzten Stand auch speichern, falls Absturz
-        torch.save(model.state_dict(), models_dir / "modell_last.pth")
+        # Manager updaten (schreibt in JSON)
+        manager.update_metrics(epoch, avg_val_loss, is_best)
 
+        # 4. Cleanup (Wichtig für MPS/Mac)
+        if device.type == 'mps':
+            torch.mps.empty_cache()
+        gc.collect()
+
+    print("Training abgeschlossen.")
 
 if __name__ == "__main__":
     main()

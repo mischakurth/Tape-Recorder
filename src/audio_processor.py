@@ -3,70 +3,21 @@ import librosa
 import librosa.display
 import soundfile as sf
 import matplotlib.pyplot as plt
-from typing import Tuple
 import os
-import torch
-
-
-class PairedAudioDataset(torch.utils.data.Dataset):
-    def __init__(self, file_pairs, processor, crop_width=256):
-        self.file_pairs = file_pairs
-        self.processor = processor
-        self.crop_width = crop_width
-        self.target_height = 1040
-
-    def __len__(self):
-        return len(self.file_pairs)
-
-    def __getitem__(self, idx):
-        input_path, target_path = self.file_pairs[idx]
-
-        # Input laden & verarbeiten
-        y_in = self.processor.load_audio(str(input_path))
-        stft_in = self.processor.audio_to_stft(y_in)
-        cnn_in = self.processor.stft_to_cnn_input(stft_in)
-
-        # Target laden & verarbeiten
-        y_tgt = self.processor.load_audio(str(target_path))
-        stft_tgt = self.processor.audio_to_stft(y_tgt)
-        cnn_tgt = self.processor.stft_to_cnn_input(stft_tgt)
-
-        # Padding (Freq)
-        c, h, w = cnn_in.shape
-        pad_height = self.target_height - h
-        if pad_height > 0:
-            cnn_in = np.pad(cnn_in, ((0, 0), (0, pad_height), (0, 0)), mode='constant')
-            cnn_tgt = np.pad(cnn_tgt, ((0, 0), (0, pad_height), (0, 0)), mode='constant')
-
-        # Slicing (Zeit) - Random Crop
-        # Wir müssen sicherstellen, dass wir an der gleichen Stelle schneiden!
-        _, _, time_frames = cnn_in.shape
-
-        # Achtung: Input und Target können leicht unterschiedlich lang sein.
-        # Wir nehmen das Minimum.
-        min_frames = min(cnn_in.shape[2], cnn_tgt.shape[2])
-
-        if min_frames > self.crop_width:
-            start = torch.randint(0, min_frames - self.crop_width, (1,)).item()
-            crop_in = cnn_in[:, :, start: start + self.crop_width]
-            crop_tgt = cnn_tgt[:, :, start: start + self.crop_width]
-        else:
-            # Padding in Zeitrichtung
-            pad_time = self.crop_width - min_frames
-            crop_in = np.pad(cnn_in[:, :, :min_frames], ((0, 0), (0, 0), (0, pad_time)), mode='constant')
-            crop_tgt = np.pad(cnn_tgt[:, :, :min_frames], ((0, 0), (0, 0), (0, pad_time)), mode='constant')
-
-        return torch.from_numpy(crop_in).float(), torch.from_numpy(crop_tgt).float()
-
 
 class AudioProcessor:
     def __init__(self, sample_rate: int = 96000, n_fft: int = 2048, hop_length: int = 512):
         self.sample_rate = sample_rate
         self.n_fft = n_fft
         self.hop_length = hop_length
+        self.original_subtype = None  # Speichert Bit-Tiefe der Eingabedatei
 
     def load_audio(self, file_path: str) -> np.ndarray:
         """Lädt Audio als Stereo (2, samples). Konvertiert Mono zu Stereo."""
+        # Speichere Original-Subtype für späteres Speichern
+        info = sf.info(file_path)
+        self.original_subtype = info.subtype
+
         # mono=False ist wichtig für Stereo
         y, _ = librosa.load(file_path, sr=self.sample_rate, mono=False)
 
@@ -82,7 +33,9 @@ class AudioProcessor:
 
     def save_audio(self, file_path: str, waveform: np.ndarray) -> None:
         """Speichert Audio. Erwartet (Channels, Samples), Soundfile braucht (Samples, Channels)."""
-        sf.write(file_path, waveform.T, self.sample_rate)
+        # Verwende gleiche Bit-Tiefe wie Eingabedatei (falls verfügbar)
+        subtype = self.original_subtype if self.original_subtype else 'PCM_16'
+        sf.write(file_path, waveform.T, self.sample_rate, subtype=subtype)
 
     def audio_to_stft(self, waveform: np.ndarray) -> np.ndarray:
         """Erzeugt komplexes STFT. Output: (Channels, Freq, Time)."""

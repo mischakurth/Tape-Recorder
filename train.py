@@ -110,16 +110,18 @@ def main():
     variant_name = "resnet"
 
     # Soll nach dem letzten Checkpoint dieser Variante gesucht werden?
-    resume_mode = True
+    resume_mode = False
 
     # Config Dictionary (wird im JSON gespeichert)
     config = {
         "batch_size": 24,
-        "lr": 1e-4,
+        "lr": 1e-4, # Start-Lernrate
         "epochs": 5,
         "loss": "L1Loss",
         "dataset_overlap_train": 0.5,
-        "dataset_overlap_val": 0.0
+        "dataset_overlap_val": 0.0,
+        "scheduler_patience": 2,  # Warte 2 Epochen ohne Verbesserung
+        "scheduler_factor": 0.1  # Dann reduziere LR auf 10% (z.B. 1e-4 -> 1e-5)
     }
 
     # Architektur-Mapping
@@ -133,7 +135,7 @@ def main():
 
     # --- DATENPFADE ---
     # Nimm None für ALLES (alle Dataset-Ordner)
-    target_dataset = "dataset-charlie" # None um alle Daten zu laden
+    target_dataset = None # None um alle Daten zu laden
     # Passe diesen Pfad ggf. an deine Struktur an (hier relativ zum Projekt-Root)
     data_root = project_root / "data" / "audio" / "datasets"
 
@@ -232,6 +234,12 @@ def main():
 
     # Optimizer & Loss
     optimizer = torch.optim.Adam(model.parameters(), lr=config["lr"])
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer,
+        mode='min',
+        factor=config["scheduler_factor"],
+        patience=config["scheduler_patience"],
+    )
     loss_fn = torch.nn.L1Loss()
 
     # --- TRAINING LOOP ---
@@ -277,6 +285,12 @@ def main():
                 val_loss += loss.item()
 
         avg_val_loss = val_loss / len(val_loader)
+
+        scheduler.step(avg_val_loss)
+
+        # Aktuelle LR anzeigen
+        current_lr = optimizer.param_groups[0]['lr']
+        print(f"   -> Learning Rate: {current_lr:.2e}")
 
         # Zeitmessung
         duration = datetime.now() - start_time

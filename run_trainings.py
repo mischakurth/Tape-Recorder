@@ -8,31 +8,54 @@ experiments = [
         {
             "variant": "standard",
             "dataset": "All",
-            "epochs": 10,
-            "batch_size": 24,
+            "epochs": 5,
+            "batch_size": 20,
             "resume": False
         },
         # Experiment 2
         {
             "variant": "resnet",
             "dataset": "All",
-            "epochs":7,
-            "batch_size": 24,
-            "resume": True  # Setze True, falls du fortsetzen willst
+            "epochs":5,
+            "batch_size": 20,
+            "resume": False
         },
         # Experiment 3
         {
             "variant": "standard",
             "dataset": "All",
-            "epochs": 10,
-            "batch_size": 20,  # Kleinerer Batch da "All" evtl. mehr Varianz hat
+            "epochs": 5,
+            "batch_size": 16,
             "resume": False
         },
+        # Experiment 4
+        {
+            "variant": "resnet",
+            "dataset": "All",
+            "epochs":5,
+            "batch_size": 16,
+            "resume": False
+        },
+        # Experiment 5
+        {
+            "variant": "standard",
+            "dataset": "All",
+            "epochs": 5,
+            "batch_size": 24,
+            "resume": True
+        },
+        # Experiment 6
+        {
+            "variant": "resnet",
+            "dataset": "All",
+            "epochs": 5,
+            "batch_size": 24,
+            "resume": True
+        }
     ]
 
 def run_experiments():
     # --- KONFIGURATION DER EXPERIMENTE ---
-
     print(f"🚀 Starte Queue mit {len(experiments)} Experimenten...\n")
     total_start = datetime.now()
 

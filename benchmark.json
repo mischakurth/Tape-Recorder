@@ -1,0 +1,53 @@
+{
+    "timestamp": "2025-12-24 12:37:23",
+    "benchmark_dataset": "All (Validation Split 20%)",
+    "device": "mps",
+    "total_models": 5,
+    "ranking": [
+        {
+            "id": "2025-12-24_02-07_standard_All",
+            "variant": "standard",
+            "dataset": "All",
+            "epochs": 10,
+            "resumed_full_path": null,
+            "loss": 0.03144657206536398,
+            "rank": 1
+        },
+        {
+            "id": "2025-12-23_23-43_resnet_All",
+            "variant": "resnet",
+            "dataset": "All",
+            "epochs": 3,
+            "resumed_full_path": null,
+            "loss": 0.03575521817176857,
+            "rank": 2
+        },
+        {
+            "id": "2025-12-24_08-10_resnet_All",
+            "variant": "resnet",
+            "dataset": "All",
+            "epochs": 6,
+            "resumed_full_path": null,
+            "loss": 0.03682689017997208,
+            "rank": 3
+        },
+        {
+            "id": "2025-12-23_23-12_resnet",
+            "variant": "resnet",
+            "dataset": "Unknown",
+            "epochs": 10,
+            "resumed_full_path": null,
+            "loss": 0.0574774885031564,
+            "rank": 4
+        },
+        {
+            "id": "2025-12-23_23-26_resnet_Charlie",
+            "variant": "resnet",
+            "dataset": "Charlie",
+            "epochs": 5,
+            "resumed_full_path": null,
+            "loss": 0.06059391198108311,
+            "rank": 5
+        }
+    ]
+}

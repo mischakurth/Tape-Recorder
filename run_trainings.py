@@ -16,7 +16,7 @@ experiments = [
         {
             "variant": "resnet",
             "dataset": "All",
-            "epochs": 10,
+            "epochs":7,
             "batch_size": 24,
             "resume": True  # Setze True, falls du fortsetzen willst
         },
@@ -32,7 +32,7 @@ experiments = [
 
 def run_experiments():
     # --- KONFIGURATION DER EXPERIMENTE ---
-    
+
     print(f"🚀 Starte Queue mit {len(experiments)} Experimenten...\n")
     total_start = datetime.now()
 

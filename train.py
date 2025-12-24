@@ -106,7 +106,6 @@ def parse_args():
     parser.add_argument("--batch_size", type=int, default=24, help="Batch Size")
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning Rate")
     parser.add_argument("--epochs", type=int, default=10, help="Anzahl Epochen")
-
     # Flags (Schalter): Wenn sie da sind = True, sonst = False
     parser.add_argument("--resume", action="store_true", help="Versuche letztes Training fortzusetzen")
 
@@ -187,8 +186,15 @@ def main():
         # Entfernt "dataset-" und macht den ersten Buchstaben groß (dataset-berta -> Berta)
         dataset_label = target_dataset.replace("dataset-", "").capitalize()
 
+    source_model_str = str(pretrained_path) if pretrained_path else None
+
     # Wir erstellen IMMER einen neuen Ordner, damit die Historie sauber bleibt.
-    run_dir = manager.start_new_run(variant_name, dataset_label, config)
+    run_dir = manager.start_new_run(
+        variant=variant_name,
+        dataset_name=dataset_label,
+        config=config,
+        resumed_from=source_model_str
+    )
 
     best_model_path = run_dir / "best.pth"
     last_model_path = run_dir / "last.pth"
@@ -278,6 +284,9 @@ def main():
         model.train()
         train_loss = 0.0
 
+        num_batches = len(train_loader)
+        width = len(str(num_batches))
+
         for batch_idx, (x, y) in enumerate(train_loader):
             x, y = x.to(device), y.to(device)
 
@@ -291,8 +300,8 @@ def main():
             train_loss += loss.item()
 
             # Log alle 50 Batches
-            if batch_idx % 10 == 0:
-                print(f"   [Epoch {epoch + 1}] Batch {batch_idx}/{len(train_loader)} | Loss: {loss.item():.6f}")
+            if batch_idx % 50 == 0:
+                print(f"   [Epoch {epoch + 1}] Batch {batch_idx:>{width}}/{num_batches} | Loss: {loss.item():.6f}")
 
         avg_train_loss = train_loss / len(train_loader)
 

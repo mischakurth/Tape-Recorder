@@ -24,7 +24,7 @@ class ExperimentManager:
         with open(self.registry_path, "w") as f:
             json.dump(self.registry, f, indent=4, default=str)
 
-    def start_new_run(self, variant: str, dataset_name: str, config: dict):
+    def start_new_run(self, variant: str, dataset_name: str, config: dict, resumed_from: str = None):
         """
         Erstellt Ordner und bereitet Daten vor.
         Format: timestamp_variant_dataset (z.B. 2024-04-01_10-00_resnet_Berta)
@@ -42,7 +42,8 @@ class ExperimentManager:
         self.current_run = {
             "id": run_id,
             "variant": variant,
-            "dataset": dataset_name,  # Neu: Speichern wir auch im JSON
+            "dataset": dataset_name,
+            "resumed_from": resumed_from,
             "timestamp": timestamp,
             "status": "running",
             "best_val_loss": float('inf'),
@@ -90,15 +91,3 @@ class ExperimentManager:
             print(f"Manager: Bestes Modell des letzten Runs gefunden: {latest['id']} (Loss: {latest['best_val_loss']})")
             return path
         return None
-
-    def get_global_best_model(self):
-        """Findet das ABSOLUT BESTE Modell aller Zeiten."""
-        if not self.registry: return None
-
-        valid_runs = [r for r in self.registry if r["best_val_loss"] != float('inf')]
-        if not valid_runs: return None
-
-        valid_runs.sort(key=lambda x: x["best_val_loss"])
-        best = valid_runs[0]
-
-        return Path(best["best_model_path"]), best

@@ -9,6 +9,7 @@ from src.dataset import StreamingAudioDataset
 from src.audio_processor import AudioProcessor
 from src.experiment_manager import ExperimentManager
 import os
+import argparse
 
 # --- Hilfsfunktion zum Finden der Dateien ---
 def find_paired_files(input_dir: Path, output_dir: Path) -> list[tuple[Path, Path]]:
@@ -95,7 +96,27 @@ def get_all_file_pairs(data_root: Path, target_dataset: str | None = None) -> li
     return all_pairs
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(description="Audio Training Script")
+
+    # Hier definierst du die DEFAULTS für PyCharm (Wenn du nichts angibst)
+    parser.add_argument("--variant", type=str, default="standard", choices=["standard", "resnet"],
+                        help="Modell Architektur")
+    parser.add_argument("--dataset", type=str, default="All", help="Name des Datasets (oder 'All' für alle)")
+    parser.add_argument("--batch_size", type=int, default=24, help="Batch Size")
+    parser.add_argument("--lr", type=float, default=1e-4, help="Learning Rate")
+    parser.add_argument("--epochs", type=int, default=10, help="Anzahl Epochen")
+
+    # Flags (Schalter): Wenn sie da sind = True, sonst = False
+    parser.add_argument("--resume", action="store_true", help="Versuche letztes Training fortzusetzen")
+
+    return parser.parse_args()
+
+
 def main():
+    # Argumente lesen (CLI oder Defaults)
+    args = parse_args()
+
     # --- SETUP ---
     # Basis-Pfade relativ zur Datei bestimmen
     project_root = Path(__file__).parent.resolve()
@@ -107,16 +128,14 @@ def main():
 
     # --- CONFIGURATION ---
     # Wähle hier die Modell-Architektur: "standard" oder "resnet"
-    variant_name = "resnet"
+    variant_name = args.variant
+    resume_mode = args.resume  # Wird True wenn --resume gesetzt ist
 
-    # Soll nach dem letzten Checkpoint dieser Variante gesucht werden?
-    resume_mode = False
-
-    # Config Dictionary (wird im JSON gespeichert)
+    # Config Dictionary (Werte aus args übernehmen)
     config = {
-        "batch_size": 24,
-        "lr": 1e-4, # Start-Lernrate
-        "epochs": 5,
+        "batch_size": args.batch_size,
+        "lr": args.lr,
+        "epochs": args.epochs,
         "loss": "L1Loss",
         "dataset_overlap_train": 0.5,
         "dataset_overlap_val": 0.0,
@@ -134,9 +153,12 @@ def main():
         raise ValueError(f"Unbekannte Variante '{variant_name}'. Verfügbar: {list(variants_map.keys())}")
 
     # --- DATENPFADE ---
-    # Nimm None für ALLES (alle Dataset-Ordner)
-    target_dataset = None # None um alle Daten zu laden
-    # Passe diesen Pfad ggf. an deine Struktur an (hier relativ zum Projekt-Root)
+    # Wenn "All" übergeben wird, setzen wir target_dataset auf None.
+    # Das signalisiert der Funktion get_all_file_pairs, dass ALLE Ordner durchsucht werden sollen.
+    if args.dataset == "All":
+        target_dataset = None
+    else:
+        target_dataset = args.dataset
     data_root = project_root / "data" / "audio" / "datasets"
 
     # --- AUTOMATISCHES RESUME HANDLING ---
@@ -148,10 +170,10 @@ def main():
     if manual_path and Path(manual_path).exists():
         pretrained_path = Path(manual_path)
         print(f"--> ⚠️ Lade manuell definiertes Modell (Legacy): {pretrained_path.name}")
+
     elif resume_mode:
         # Frage den Manager nach dem letzten Stand dieser Variante
         pretrained_path = manager.get_latest_checkpoint(variant_name)
-
         if pretrained_path:
             print(f"--> Resume aktiv. Setze fort von Run: {pretrained_path.parent.name}")
         else:
